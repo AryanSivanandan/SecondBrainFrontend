@@ -1,65 +1,168 @@
-import Image from "next/image";
+"use client";
+
+import { useEffect, useState } from "react";
+import { supabase } from "@/lib/supabase";
+
+type Result = {
+  chunk: string;
+  document_id: number;
+  score: number;
+};
 
 export default function Home() {
-  return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+  const [session, setSession] = useState<any>(null);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        setSession(session);
+      }
+    );
+
+    return () => {
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  if (!session) {
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center gap-4">
+        <h1 className="text-3xl font-bold">Second Brain</h1>
+
+        <button
+          onClick={() =>
+            supabase.auth.signInWithOAuth({ provider: "github" })
+          }
+          className="px-4 py-2 bg-black text-white rounded-lg"
+        >
+          Login with GitHub
+        </button>
+
+        <button
+          onClick={() =>
+            supabase.auth.signInWithOAuth({ provider: "google" })
+          }
+          className="px-4 py-2 bg-blue-500 text-white rounded-lg"
+        >
+          Login with Google
+        </button>
       </main>
+    );
+  }
+
+  return <Dashboard />;
+}
+
+function Dashboard() {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<Result[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const handleSearch = async () => {
+    if (!query.trim()) return;
+
+    setLoading(true);
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    const res = await fetch(
+      `${process.env.NEXT_PUBLIC_BACKEND_URL}/query`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session?.access_token}`,
+        },
+        body: JSON.stringify({ query }),
+      }
+    );
+
+    const data = await res.json();
+    setResults(data);
+    setLoading(false);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") handleSearch();
+  };
+
+  const truncate = (text: string, maxLength = 250) => {
+    return text.length > maxLength
+      ? text.slice(0, maxLength) + "..."
+      : text;
+  };
+
+ return (
+  <main className="min-h-screen bg-[#0f172a] flex justify-center p-6">
+    <div className="w-full max-w-3xl">
+
+      {/* Header */}
+      <div className="flex justify-between items-center mb-8">
+        <h1 className="text-3xl font-semibold text-white">
+          Second Brain
+        </h1>
+
+        <button
+          onClick={() => supabase.auth.signOut()}
+          className="text-sm text-red-400 hover:text-red-300"
+        >
+          Logout
+        </button>
+      </div>
+
+      {/* Search */}
+      <div className="flex gap-3 mb-8">
+        <input
+          className="flex-1 p-4 rounded-xl bg-[#1e293b] text-white border border-[#334155] 
+                     placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="Ask anything..."
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={handleKeyDown}
+        />
+
+        <button
+          onClick={handleSearch}
+          className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-medium"
+        >
+          Search
+        </button>
+      </div>
+
+      {/* Loading */}
+      {loading && (
+        <p className="text-gray-400">Searching...</p>
+      )}
+
+      {/* Results */}
+      <div className="space-y-4">
+        {results.slice(0, 5).map((r, i) => (
+          <div
+            key={i}
+            className="p-5 rounded-xl bg-[#1e293b] border border-[#334155] hover:border-blue-500 transition"
+          >
+            <p className="text-xs text-gray-400 mb-2">
+              Result {i + 1}
+            </p>
+
+            <p className="text-gray-100 leading-relaxed mb-3">
+              {truncate(r.chunk)}
+            </p>
+
+            <div className="flex justify-between text-xs text-gray-400">
+              <span>Score: {r.score?.toFixed(3)}</span>
+              <span>Doc {r.document_id}</span>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
-  );
+  </main>
+);
 }
