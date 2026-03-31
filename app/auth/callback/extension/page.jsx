@@ -15,30 +15,53 @@ export default function ExtensionCallback() {
   useEffect(() => {
     async function handleAuth() {
       try {
-        await new Promise(resolve => setTimeout(resolve, 500))
-        
-        const { data: { session }, error } = await supabase.auth.getSession()
+        // Wait for Supabase to process the URL hash tokens
+        // onAuthStateChange fires when session is ready
+        const { data: { subscription } } = supabase.auth.onAuthStateChange(
+          async (event, session) => {
+            if (event === 'SIGNED_IN' && session) {
+              subscription.unsubscribe()
+              setStatus("Logged in! Connecting to extension...")
 
-        if (error || !session) {
-          setError("Login failed. Please close this tab and try again.")
-          setStatus("")
+              window.postMessage({
+                type: "SUPABASE_SESSION",
+                token: session.access_token,
+                refresh_token: session.refresh_token,
+                email: session.user.email
+              }, "*")
+
+              setStatus("Connected! This tab will close automatically.")
+              setTimeout(() => window.close(), 2000)
+            }
+          }
+        )
+
+        // Also check if session already exists (page reload case)
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session) {
+          subscription.unsubscribe()
+          setStatus("Logged in! Connecting to extension...")
+
+          window.postMessage({
+            type: "SUPABASE_SESSION",
+            token: session.access_token,
+            refresh_token: session.refresh_token,
+            email: session.user.email
+          }, "*")
+
+          setStatus("Connected! This tab will close automatically.")
+          setTimeout(() => window.close(), 2000)
           return
         }
 
-        setStatus("Logged in! Connecting to extension...")
-
-        // postMessage works in both Firefox and Chrome
-        // The content script injected by the extension picks this up
-        window.postMessage({
-          type: "SUPABASE_SESSION",
-          token: session.access_token,
-          email: session.user.email
-        }, "*")
-
-        setStatus("Connected! This tab will close automatically.")
-        setTimeout(() => window.close(), 2000)
+        // Timeout fallback — if nothing happens in 10 seconds
+        setTimeout(() => {
+          setError("Login timed out. Please close this tab and try again.")
+          setStatus("")
+        }, 10000)
 
       } catch (err) {
+        console.error("Auth callback error:", err)
         setError("Something went wrong. Please try again.")
         setStatus("")
       }
