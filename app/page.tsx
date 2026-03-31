@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import Link from "next/link";
+import ReactMarkdown from "react-markdown";
 
 type Result = {
   chunk: string;
@@ -29,6 +30,11 @@ type Reminder = {
   captured_at: string;
 };
 
+type Recommendation = {
+  topic: string;
+  reason: string;
+};
+
 const BACKEND = "/api";
 
 async function authFetch(url: string, options: RequestInit = {}) {
@@ -45,7 +51,7 @@ async function authFetch(url: string, options: RequestInit = {}) {
 }
 
 function timeAgo(dateStr: string) {
-  const normalized = dateStr.endsWith('Z') || dateStr.includes('+') ? dateStr : dateStr + 'Z';
+  const normalized = dateStr.endsWith("Z") ? dateStr : dateStr + "Z";
   const diff = Date.now() - new Date(normalized).getTime();
   const mins = Math.floor(diff / 60000);
   const hours = Math.floor(diff / 3600000);
@@ -60,6 +66,29 @@ function hostname(url: string) {
   try { return new URL(url).hostname.replace("www.", ""); }
   catch { return ""; }
 }
+
+const mdStyles = `
+  .md p { margin: 0 0 10px; }
+  .md p:last-child { margin: 0; }
+  .md strong { color: #e0e0f0; font-weight: 600; }
+  .md em { font-style: italic; }
+  .md ul, .md ol { padding-left: 20px; margin: 8px 0; }
+  .md li { margin-bottom: 5px; line-height: 1.6; }
+  .md h1, .md h2, .md h3 { color: #e0e0f0; font-weight: 500; margin: 14px 0 6px; }
+  .md h1 { font-size: 17px; }
+  .md h2 { font-size: 15px; }
+  .md h3 { font-size: 14px; }
+  .md code { background: #1a1a2e; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-family: monospace; color: #a0c0f0; }
+  .md pre { background: #1a1a2e; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 10px 0; }
+  .md pre code { background: none; padding: 0; }
+  .md blockquote { border-left: 3px solid #6366f1; padding-left: 12px; margin: 10px 0; color: #888; }
+  .md a { color: #6366f1; }
+  .doc-card:hover { border-color: #2a2a3a !important; background: #111118 !important; }
+  .source-card:hover { border-color: #6366f1 !important; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  .fade-in { animation: fadeIn 0.25s ease forwards; }
+`;
 
 export default function Home() {
   const [session, setSession] = useState<any>(null);
@@ -88,73 +117,35 @@ export default function Home() {
 function LoginPage() {
   return (
     <main style={{
-      minHeight: "100vh",
-      background: "#0a0a0f",
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: "32px",
-      fontFamily: "'DM Sans', system-ui, sans-serif",
+      minHeight: "100vh", background: "#0a0a0f",
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      gap: "32px", fontFamily: "'DM Sans', system-ui, sans-serif",
     }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
-      `}</style>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');`}</style>
 
       <div style={{ textAlign: "center" }}>
         <div style={{ fontSize: "13px", letterSpacing: "0.15em", color: "#6366f1", marginBottom: "16px", textTransform: "uppercase", fontWeight: 500 }}>
           Second Brain
         </div>
-        <h1 style={{ fontSize: "48px", fontWeight: 300, color: "#f0f0f0", margin: "0 0 12px", letterSpacing: "-1.5px", lineHeight: 1 }}>
+        <h1 style={{ fontSize: "42px", fontWeight: 300, color: "#f0f0f0", margin: "0 0 12px", letterSpacing: "-1.5px", lineHeight: 1 }}>
           Everything you read,<br />remembered.
         </h1>
-        <p style={{ fontSize: "16px", color: "#555", margin: 0, fontWeight: 400 }}>
-          Capture anything. Ask anything. Find anything.
-        </p>
+        <p style={{ fontSize: "15px", color: "#555", margin: 0 }}>Capture anything. Ask anything. Find anything.</p>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: "10px", width: "280px" }}>
         <button
           onClick={() => supabase.auth.signInWithOAuth({ provider: "github", options: { redirectTo: `${window.location.origin}/auth/callback` } })}
-          style={{
-            padding: "12px 20px",
-            background: "#f0f0f0",
-            color: "#0a0a0f",
-            border: "none",
-            borderRadius: "10px",
-            fontSize: "14px",
-            fontWeight: 500,
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "8px",
-            fontFamily: "inherit",
-          }}
+          style={{ padding: "12px 20px", background: "#f0f0f0", color: "#0a0a0f", border: "none", borderRadius: "10px", fontSize: "14px", fontWeight: 500, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", fontFamily: "inherit" }}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
           </svg>
           Continue with GitHub
         </button>
-
         <button
           onClick={() => supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: `${window.location.origin}/auth/callback` } })}
-          style={{
-            padding: "12px 20px",
-            background: "transparent",
-            color: "#f0f0f0",
-            border: "1px solid #222",
-            borderRadius: "10px",
-            fontSize: "14px",
-            fontWeight: 500,
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "8px",
-            fontFamily: "inherit",
-          }}
+          style={{ padding: "12px 20px", background: "transparent", color: "#f0f0f0", border: "1px solid #222", borderRadius: "10px", fontSize: "14px", fontWeight: 500, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", fontFamily: "inherit" }}
         >
           <svg width="16" height="16" viewBox="0 0 48 48">
             <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
@@ -175,29 +166,63 @@ function Dashboard({ session }: { session: any }) {
   const [results, setResults] = useState<Result[]>([]);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [loading, setLoading] = useState(false);
   const [feedLoading, setFeedLoading] = useState(true);
   const [mode, setMode] = useState<"feed" | "search">("feed");
   const inputRef = useRef<HTMLInputElement>(null);
+  const pollRef = useRef<NodeJS.Timeout | null>(null);
+
+  // --------------- LOAD FEED --------------- //
+  const loadFeed = useCallback(async () => {
+    try {
+      const [docsRes, remsRes, recsRes] = await Promise.all([
+        authFetch(`${BACKEND}/documents?limit=20`).then(r => r.json()),
+        authFetch(`${BACKEND}/reminders`).then(r => r.json()),
+        authFetch(`${BACKEND}/recommendations`).then(r => r.json()).catch(() => []),
+      ]);
+      setDocuments(Array.isArray(docsRes) ? docsRes : []);
+      setReminders(Array.isArray(remsRes) ? remsRes : []);
+      setRecommendations(Array.isArray(recsRes) ? recsRes : []);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setFeedLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-  Promise.all([
-    authFetch(`${BACKEND}/documents?limit=20`).then(async r => {
-      const text = await r.text();
-      console.log("documents response:", r.status, text);
-      try { return JSON.parse(text); } catch { return []; }
-    }),
-    authFetch(`${BACKEND}/reminders`).then(async r => {
-      const text = await r.text();
-      console.log("reminders response:", r.status, text);
-      try { return JSON.parse(text); } catch { return []; }
-    }),
-  ]).then(([docs, rems]) => {
-    setDocuments(Array.isArray(docs) ? docs : []);
-    setReminders(Array.isArray(rems) ? rems : []);
-  }).catch(console.error).finally(() => setFeedLoading(false));
-}, []);
+    loadFeed();
+  }, [loadFeed]);
 
+  // --------------- REAL-TIME DOM UPDATES --------------- //
+  // Poll every 30 seconds when in feed mode to pick up new captures
+  // without requiring a page refresh
+  useEffect(() => {
+    if (mode !== "feed") return;
+
+    pollRef.current = setInterval(() => {
+      authFetch(`${BACKEND}/documents?limit=20`)
+        .then(r => r.json())
+        .then(docs => {
+          if (!Array.isArray(docs)) return;
+          setDocuments(prev => {
+            // Only update if new captures exist (different length or different first id)
+            if (docs.length !== prev.length || (docs[0]?.id !== prev[0]?.id)) {
+              return docs;
+            }
+            return prev;
+          });
+        })
+        .catch(() => {});
+    }, 30000);
+
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [mode]);
+
+  // --------------- SEARCH --------------- //
   const handleSearch = async () => {
     if (!query.trim()) return;
     setLoading(true);
@@ -225,23 +250,19 @@ function Dashboard({ session }: { session: any }) {
     setMode("feed");
     setAnswer("");
     setResults([]);
+    // Refresh feed when returning to it
+    loadFeed();
     inputRef.current?.focus();
   };
 
   return (
-    <main style={{
-      minHeight: "100vh",
-      background: "#0a0a0f",
-      fontFamily: "'DM Sans', system-ui, sans-serif",
-      color: "#f0f0f0",
-    }}>
+    <main style={{ minHeight: "100vh", background: "#0a0a0f", fontFamily: "'DM Sans', system-ui, sans-serif", color: "#f0f0f0" }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');
         * { box-sizing: border-box; }
         ::placeholder { color: #444; }
         a { color: inherit; text-decoration: none; }
-        .doc-card:hover { border-color: #2a2a3a !important; background: #111118 !important; }
-        .source-card:hover { border-color: #6366f1 !important; }
+        ${mdStyles}
       `}</style>
 
       <div style={{ maxWidth: "680px", margin: "0 auto", padding: "32px 20px" }}>
@@ -255,11 +276,9 @@ function Dashboard({ session }: { session: any }) {
             Second Brain
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-            <span style={{ fontSize: "12px", color: "#444" }}>{session?.user?.email}</span>
-            <button
-              onClick={() => supabase.auth.signOut()}
-              style={{ fontSize: "12px", color: "#555", background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "inherit" }}
-            >
+            <span style={{ fontSize: "12px", color: "#333" }}>{session?.user?.email}</span>
+            <button onClick={() => supabase.auth.signOut()}
+              style={{ fontSize: "12px", color: "#555", background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "inherit" }}>
               Sign out
             </button>
           </div>
@@ -274,43 +293,27 @@ function Dashboard({ session }: { session: any }) {
             onKeyDown={e => e.key === "Enter" && handleSearch()}
             placeholder="Ask your second brain..."
             style={{
-              width: "100%",
-              padding: "14px 100px 14px 18px",
-              background: "#111118",
-              border: "1px solid #1e1e2e",
-              borderRadius: "12px",
-              fontSize: "15px",
-              color: "#f0f0f0",
-              outline: "none",
-              fontFamily: "inherit",
-              transition: "border-color 0.15s",
+              width: "100%", padding: "14px 110px 14px 18px",
+              background: "#111118", border: "1px solid #1e1e2e",
+              borderRadius: "12px", fontSize: "15px", color: "#f0f0f0",
+              fontFamily: "inherit", transition: "border-color 0.15s",
             }}
             onFocus={e => e.target.style.borderColor = "#6366f1"}
             onBlur={e => e.target.style.borderColor = "#1e1e2e"}
           />
           <div style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", display: "flex", gap: "6px" }}>
             {mode === "search" && (
-              <button
-                onClick={clearSearch}
-                style={{ padding: "6px 10px", background: "transparent", border: "none", color: "#555", cursor: "pointer", fontSize: "18px", lineHeight: 1, fontFamily: "inherit" }}
-              >
+              <button onClick={clearSearch}
+                style={{ padding: "6px 10px", background: "transparent", border: "none", color: "#555", cursor: "pointer", fontSize: "18px", lineHeight: 1, fontFamily: "inherit" }}>
                 ×
               </button>
             )}
-            <button
-              onClick={handleSearch}
+            <button onClick={handleSearch}
               style={{
-                padding: "7px 14px",
-                background: "#6366f1",
-                border: "none",
-                borderRadius: "8px",
-                color: "white",
-                fontSize: "13px",
-                fontWeight: 500,
-                cursor: "pointer",
-                fontFamily: "inherit",
-              }}
-            >
+                padding: "7px 14px", background: "#6366f1", border: "none",
+                borderRadius: "8px", color: "white", fontSize: "13px",
+                fontWeight: 500, cursor: "pointer", fontFamily: "inherit"
+              }}>
               {loading ? "..." : "Ask"}
             </button>
           </div>
@@ -318,7 +321,7 @@ function Dashboard({ session }: { session: any }) {
 
         {/* SEARCH MODE */}
         {mode === "search" && (
-          <div>
+          <div className="fade-in">
             {loading && (
               <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "#555", fontSize: "14px", marginBottom: "24px" }}>
                 <div style={{ width: "14px", height: "14px", border: "1.5px solid #333", borderTopColor: "#6366f1", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
@@ -326,44 +329,30 @@ function Dashboard({ session }: { session: any }) {
               </div>
             )}
 
-            {/* LLM Answer */}
             {answer && (
-              <div style={{
-                padding: "20px",
-                background: "#0d0d18",
-                border: "1px solid #1e1e3a",
-                borderRadius: "12px",
-                marginBottom: "24px",
-              }}>
+              <div style={{ padding: "20px", background: "#0d0d18", border: "1px solid #1e1e3a", borderRadius: "12px", marginBottom: "24px" }} className="fade-in">
                 <div style={{ fontSize: "11px", color: "#6366f1", marginBottom: "10px", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 500 }}>
                   Answer
                 </div>
-                <p style={{ fontSize: "15px", lineHeight: 1.7, color: "#d0d0e0", margin: 0 }}>
-                  {answer}
-                </p>
+                <div className="md" style={{ fontSize: "15px", lineHeight: 1.7, color: "#d0d0e0" }}>
+                  <ReactMarkdown>{answer}</ReactMarkdown>
+                </div>
               </div>
             )}
 
-            {/* Source chunks */}
             {results.length > 0 && (
-              <div>
+              <div className="fade-in">
                 <div style={{ fontSize: "11px", color: "#444", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.1em" }}>
                   Sources ({results.length})
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                   {results.map((r, i) => (
                     <Link key={i} href={`/document/${r.document_id}`}>
-                      <div
-                        className="source-card"
-                        style={{
-                          padding: "14px 16px",
-                          background: "#111118",
-                          border: "1px solid #1a1a28",
-                          borderRadius: "10px",
-                          cursor: "pointer",
-                          transition: "border-color 0.15s",
-                        }}
-                      >
+                      <div className="source-card" style={{
+                        padding: "14px 16px", background: "#111118",
+                        border: "1px solid #1a1a28", borderRadius: "10px",
+                        cursor: "pointer", transition: "border-color 0.15s",
+                      }}>
                         <p style={{ fontSize: "13px", color: "#b0b0c0", lineHeight: 1.6, margin: "0 0 8px" }}>
                           {r.chunk.slice(0, 200)}{r.chunk.length > 200 ? "..." : ""}
                         </p>
@@ -389,23 +378,17 @@ function Dashboard({ session }: { session: any }) {
               <>
                 {/* Reminders */}
                 {reminders.length > 0 && (
-                  <div style={{ marginBottom: "32px" }}>
+                  <div style={{ marginBottom: "28px" }}>
                     <div style={{ fontSize: "11px", color: "#444", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.1em" }}>
                       Resurface
                     </div>
-                    {reminders.map((r) => (
+                    {reminders.map(r => (
                       <Link key={r.document_id} href={`/document/${r.document_id}`}>
                         <div style={{
-                          padding: "12px 16px",
-                          background: "#0f0f0a",
-                          border: "1px solid #2a2a1a",
-                          borderRadius: "10px",
-                          marginBottom: "8px",
-                          cursor: "pointer",
+                          padding: "12px 16px", background: "#0f0f0a",
+                          border: "1px solid #2a2a1a", borderRadius: "10px", marginBottom: "8px", cursor: "pointer"
                         }}>
-                          <p style={{ fontSize: "13px", fontWeight: 500, margin: "0 0 3px", color: "#d4c87a" }}>
-                            {r.title}
-                          </p>
+                          <p style={{ fontSize: "13px", fontWeight: 500, margin: "0 0 3px", color: "#d4c87a" }}>{r.title}</p>
                           <p style={{ fontSize: "12px", color: "#666", margin: 0 }}>{r.reason}</p>
                         </div>
                       </Link>
@@ -413,42 +396,60 @@ function Dashboard({ session }: { session: any }) {
                   </div>
                 )}
 
+                {/* Recommendations */}
+                {recommendations.length > 0 && (
+                  <div style={{ marginBottom: "28px" }}>
+                    <div style={{ fontSize: "11px", color: "#444", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                      You might want to capture
+                    </div>
+                    {recommendations.map((r, i) => (
+                      <div key={i} style={{
+                        padding: "12px 16px", background: "#0a0a14",
+                        border: "1px solid #1a1a2e", borderRadius: "10px", marginBottom: "8px"
+                      }}>
+                        <p style={{ fontSize: "13px", fontWeight: 500, margin: "0 0 3px", color: "#6366f1" }}>{r.topic}</p>
+                        <p style={{ fontSize: "12px", color: "#555", margin: 0 }}>{r.reason}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {/* Recent captures */}
                 <div>
-                  <div style={{ fontSize: "11px", color: "#444", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                    Recent — {documents.length} captures
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                    <div style={{ fontSize: "11px", color: "#444", textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                      Recent — {documents.length} captures
+                    </div>
+                    {/* Manual refresh button */}
+                    <button
+                      onClick={loadFeed}
+                      style={{ fontSize: "11px", color: "#333", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit" }}
+                      title="Refresh feed"
+                    >
+                      ↺
+                    </button>
                   </div>
 
                   {documents.length === 0 ? (
                     <div style={{
-                      padding: "40px",
-                      textAlign: "center",
-                      border: "1px dashed #1e1e2e",
-                      borderRadius: "12px",
-                      color: "#444",
-                      fontSize: "14px",
-                      lineHeight: 1.6,
+                      padding: "40px", textAlign: "center",
+                      border: "1px dashed #1e1e2e", borderRadius: "12px",
+                      color: "#444", fontSize: "14px", lineHeight: 1.6,
                     }}>
                       Nothing captured yet.<br />
                       <span style={{ fontSize: "12px", color: "#333" }}>
-                        Use Ctrl+Shift+9 in the browser extension to capture a page.
+                        Use Ctrl+Shift+9 in the extension to capture a page.
                       </span>
                     </div>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                      {documents.map((doc) => (
+                      {documents.map(doc => (
                         <Link key={doc.id} href={`/document/${doc.id}`}>
-                          <div
-                            className="doc-card"
-                            style={{
-                              padding: "14px 16px",
-                              background: "#0d0d14",
-                              border: "1px solid #16161f",
-                              borderRadius: "10px",
-                              cursor: "pointer",
-                              transition: "border-color 0.15s, background 0.15s",
-                            }}
-                          >
+                          <div className="doc-card" style={{
+                            padding: "14px 16px", background: "#0d0d14",
+                            border: "1px solid #16161f", borderRadius: "10px",
+                            cursor: "pointer", transition: "border-color 0.15s, background 0.15s",
+                          }}>
                             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
                               <p style={{ fontSize: "14px", fontWeight: 500, margin: 0, color: "#e0e0f0", flex: 1, marginRight: "12px" }}>
                                 {doc.title || "Untitled"}
@@ -463,16 +464,8 @@ function Dashboard({ session }: { session: any }) {
                               </p>
                             )}
                             <div style={{ display: "flex", gap: "12px" }}>
-                              {doc.url && (
-                                <span style={{ fontSize: "11px", color: "#383848" }}>
-                                  {hostname(doc.url)}
-                                </span>
-                              )}
-                              {doc.user_note && (
-                                <span style={{ fontSize: "11px", color: "#6366f1" }}>
-                                  has note
-                                </span>
-                              )}
+                              {doc.url && <span style={{ fontSize: "11px", color: "#383848" }}>{hostname(doc.url)}</span>}
+                              {doc.user_note && <span style={{ fontSize: "11px", color: "#6366f1" }}>has note</span>}
                             </div>
                           </div>
                         </Link>

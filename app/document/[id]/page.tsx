@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import ReactMarkdown from "react-markdown";
 
 const BACKEND = "/api";
 
@@ -31,6 +32,24 @@ function timeAgo(dateStr: string) {
 }
 
 type Message = { role: "user" | "assistant"; content: string };
+
+const mdStyles = `
+  .md p { margin: 0 0 10px; }
+  .md p:last-child { margin: 0; }
+  .md strong { color: #e0e0f0; font-weight: 600; }
+  .md em { color: #a0a0c0; font-style: italic; }
+  .md ul, .md ol { padding-left: 20px; margin: 8px 0; }
+  .md li { margin-bottom: 5px; line-height: 1.6; }
+  .md h1, .md h2, .md h3 { color: #e0e0f0; font-weight: 500; margin: 14px 0 6px; }
+  .md h1 { font-size: 18px; }
+  .md h2 { font-size: 16px; }
+  .md h3 { font-size: 14px; }
+  .md code { background: #1a1a2e; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-family: monospace; color: #a0c0f0; }
+  .md pre { background: #1a1a2e; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 10px 0; }
+  .md pre code { background: none; padding: 0; }
+  .md blockquote { border-left: 3px solid #6366f1; padding-left: 12px; margin: 10px 0; color: #888; }
+  .md a { color: #6366f1; }
+`;
 
 export default function DocumentPage() {
   const params = useParams();
@@ -79,7 +98,7 @@ export default function DocumentPage() {
       const res = await authFetch(`${BACKEND}/documents/${id}/summarise`, { method: "POST" });
       const data = await res.json();
       setSummary(data.summary || "");
-    } catch (e) {
+    } catch {
       setSummary("Could not generate summary.");
     } finally {
       setSummaryLoading(false);
@@ -111,18 +130,14 @@ export default function DocumentPage() {
     setMessages(newMessages);
     setChatInput("");
     setChatLoading(true);
-
     try {
       const res = await authFetch(`${BACKEND}/chat`, {
         method: "POST",
-        body: JSON.stringify({
-          messages: newMessages,
-          document_id: parseInt(id)
-        }),
+        body: JSON.stringify({ messages: newMessages, document_id: parseInt(id) }),
       });
       const data = await res.json();
       setMessages(prev => [...prev, { role: "assistant", content: data.reply }]);
-    } catch (e) {
+    } catch {
       setMessages(prev => [...prev, { role: "assistant", content: "Something went wrong. Please try again." }]);
     } finally {
       setChatLoading(false);
@@ -142,30 +157,28 @@ export default function DocumentPage() {
     <main style={{ minHeight: "100vh", background: "#0a0a0f", fontFamily: "'DM Sans', system-ui, sans-serif", color: "#f0f0f0" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');
+        @keyframes spin { to { transform: rotate(360deg); } }
         * { box-sizing: border-box; }
         textarea:focus, input:focus { outline: none; }
         a { color: inherit; text-decoration: none; }
+        ${mdStyles}
       `}</style>
 
       <div style={{ maxWidth: "720px", margin: "0 auto", padding: "32px 20px" }}>
 
-        {/* Back */}
         <Link href="/">
           <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "13px", color: "#555", marginBottom: "28px", cursor: "pointer" }}>
             ← Back
           </div>
         </Link>
 
-        {/* Title */}
         <h1 style={{ fontSize: "24px", fontWeight: 600, color: "#e0e0f0", margin: "0 0 10px", lineHeight: 1.3 }}>
           {doc.title || "Untitled"}
         </h1>
 
-        {/* Meta */}
         <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", marginBottom: "24px" }}>
           {doc.url && (
-            <a href={doc.url} target="_blank" rel="noopener noreferrer"
-              style={{ fontSize: "12px", color: "#6366f1" }}>
+            <a href={doc.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: "12px", color: "#6366f1" }}>
               {(() => { try { return new URL(doc.url).hostname; } catch { return doc.url; } })()}
             </a>
           )}
@@ -181,10 +194,8 @@ export default function DocumentPage() {
               AI Summary
             </span>
             {!chatMode && (
-              <button
-                onClick={() => setChatMode(true)}
-                style={{ fontSize: "12px", color: "#6366f1", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit" }}
-              >
+              <button onClick={() => setChatMode(true)}
+                style={{ fontSize: "12px", color: "#6366f1", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit" }}>
                 Continue in chat →
               </button>
             )}
@@ -195,7 +206,9 @@ export default function DocumentPage() {
               Summarising...
             </div>
           ) : (
-            <p style={{ fontSize: "14px", color: "#a0a0c0", lineHeight: 1.7, margin: 0 }}>{summary}</p>
+            <div className="md" style={{ fontSize: "14px", color: "#a0a0c0", lineHeight: 1.7 }}>
+              <ReactMarkdown>{summary}</ReactMarkdown>
+            </div>
           )}
         </div>
 
@@ -208,8 +221,7 @@ export default function DocumentPage() {
                 style={{ fontSize: "18px", color: "#444", background: "none", border: "none", cursor: "pointer", lineHeight: 1 }}>×</button>
             </div>
 
-            {/* Messages */}
-            <div style={{ maxHeight: "360px", overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
+            <div style={{ maxHeight: "400px", overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
               {messages.length === 0 && (
                 <p style={{ fontSize: "13px", color: "#444", margin: 0 }}>Ask anything about this capture...</p>
               )}
@@ -225,7 +237,11 @@ export default function DocumentPage() {
                   lineHeight: 1.6,
                   color: msg.role === "user" ? "white" : "#c0c0d0",
                 }}>
-                  {msg.content}
+                  {msg.role === "assistant" ? (
+                    <div className="md">
+                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                    </div>
+                  ) : msg.content}
                 </div>
               ))}
               {chatLoading && (
@@ -237,7 +253,6 @@ export default function DocumentPage() {
               <div ref={chatEndRef} />
             </div>
 
-            {/* Input */}
             <div style={{ padding: "12px 16px", borderTop: "1px solid #1a1a2e", display: "flex", gap: "8px" }}>
               <input
                 value={chatInput}
@@ -254,7 +269,8 @@ export default function DocumentPage() {
                 style={{
                   padding: "8px 16px", background: "#6366f1", border: "none",
                   borderRadius: "8px", color: "white", fontSize: "13px",
-                  cursor: "pointer", fontFamily: "inherit"
+                  cursor: "pointer", fontFamily: "inherit",
+                  opacity: chatLoading ? 0.6 : 1
                 }}>
                 Send
               </button>
@@ -275,8 +291,7 @@ export default function DocumentPage() {
               marginTop: "12px", padding: "20px", background: "#0d0d14",
               border: "1px solid #16161f", borderRadius: "10px",
               fontSize: "14px", color: "#888", lineHeight: 1.8,
-              maxHeight: "500px", overflowY: "auto",
-              whiteSpace: "pre-wrap"
+              maxHeight: "500px", overflowY: "auto", whiteSpace: "pre-wrap"
             }}>
               {doc.content}
             </div>
@@ -322,7 +337,8 @@ export default function DocumentPage() {
                 <Link key={r.id} href={`/document/${r.id}`}>
                   <div style={{
                     padding: "12px 16px", background: "#0d0d14",
-                    border: "1px solid #16161f", borderRadius: "10px", cursor: "pointer"
+                    border: "1px solid #16161f", borderRadius: "10px", cursor: "pointer",
+                    transition: "border-color 0.15s"
                   }}>
                     <p style={{ fontSize: "13px", fontWeight: 500, margin: "0 0 4px", color: "#c0c0d0" }}>{r.title}</p>
                     {r.excerpt && (
