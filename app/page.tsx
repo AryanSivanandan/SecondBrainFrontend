@@ -5,35 +5,11 @@ import { supabase } from "@/lib/supabase";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 
-type Result = {
-  chunk: string;
-  document_id: number;
-  chunk_id?: number;
-  score: number;
-};
-
-type Document = {
-  id: number;
-  title: string;
-  url: string;
-  excerpt: string;
-  captured_at: string;
-  word_count: number;
-  user_note?: string;
-};
-
-type Reminder = {
-  document_id: number;
-  title: string;
-  url: string;
-  reason: string;
-  captured_at: string;
-};
-
-type Recommendation = {
-  topic: string;
-  reason: string;
-};
+// ── Types ──────────────────────────────────────────────────── //
+type Result = { chunk: string; document_id: number; chunk_id?: number; score: number; };
+type Doc    = { id: number; title: string; url: string; excerpt: string; captured_at: string; word_count: number; user_note?: string; };
+type Reminder      = { document_id: number; title: string; url: string; reason: string; captured_at: string; };
+type Recommendation = { topic: string; reason: string; };
 
 const BACKEND = "/api";
 
@@ -42,71 +18,70 @@ async function authFetch(url: string, options: RequestInit = {}) {
   if (!session) throw new Error("Not authenticated");
   return fetch(url, {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${session.access_token}`,
-      ...options.headers,
-    },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}`, ...options.headers },
   });
 }
 
 function timeAgo(dateStr: string) {
-  const normalized = dateStr.endsWith("Z") ? dateStr : dateStr + "Z";
-  const diff = Date.now() - new Date(normalized).getTime();
-  const mins = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
+  const d   = new Date(dateStr.endsWith("Z") ? dateStr : dateStr + "Z");
+  const diff = Date.now() - d.getTime();
+  const m    = Math.floor(diff / 60000);
+  const h    = Math.floor(diff / 3600000);
   const days = Math.floor(diff / 86400000);
-  if (mins < 60) return `${mins}m ago`;
-  if (hours < 24) return `${hours}h ago`;
+  if (m  < 1)  return "just now";
+  if (m  < 60) return `${m}m ago`;
+  if (h  < 24) return `${h}h ago`;
   if (days < 30) return `${days}d ago`;
-  return new Date(normalized).toLocaleDateString();
+  return d.toLocaleDateString("en", { month: "short", day: "numeric" });
 }
 
 function hostname(url: string) {
-  try { return new URL(url).hostname.replace("www.", ""); }
-  catch { return ""; }
+  try { return new URL(url).hostname.replace("www.", ""); } catch { return ""; }
 }
 
-const mdStyles = `
-  .md p { margin: 0 0 10px; }
-  .md p:last-child { margin: 0; }
-  .md strong { color: #e0e0f0; font-weight: 600; }
-  .md em { font-style: italic; }
-  .md ul, .md ol { padding-left: 20px; margin: 8px 0; }
-  .md li { margin-bottom: 5px; line-height: 1.6; }
-  .md h1, .md h2, .md h3 { color: #e0e0f0; font-weight: 500; margin: 14px 0 6px; }
-  .md h1 { font-size: 17px; }
-  .md h2 { font-size: 15px; }
-  .md h3 { font-size: 14px; }
-  .md code { background: #1a1a2e; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-family: monospace; color: #a0c0f0; }
-  .md pre { background: #1a1a2e; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 10px 0; }
-  .md pre code { background: none; padding: 0; }
-  .md blockquote { border-left: 3px solid #6366f1; padding-left: 12px; margin: 10px 0; color: #888; }
-  .md a { color: #6366f1; }
-  .doc-card:hover { border-color: #2a2a3a !important; background: #111118 !important; }
-  .source-card:hover { border-color: #6366f1 !important; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-  .fade-in { animation: fadeIn 0.25s ease forwards; }
-`;
+// ── Icons ──────────────────────────────────────────────────── //
+const IconBrain = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/>
+    <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>
+    <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/>
+    <path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/>
+    <path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/>
+    <path d="M3.477 10.896a4 4 0 0 1 .585-.396"/>
+    <path d="M19.938 10.5a4 4 0 0 1 .585.396"/>
+    <path d="M6 18a4 4 0 0 1-1.967-.516"/>
+    <path d="M19.967 17.484A4 4 0 0 1 18 18"/>
+  </svg>
+);
 
+const IconHome = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+    <polyline points="9 22 9 12 15 12 15 22"/>
+  </svg>
+);
+
+const IconSearch = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="11" cy="11" r="8"/>
+    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+  </svg>
+);
+
+// ── Entry point ────────────────────────────────────────────── //
 export default function Home() {
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setLoading(false);
-    });
+    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setLoading(false); });
     const { data: listener } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
     return () => listener.subscription.unsubscribe();
   }, []);
 
   if (loading) return (
-    <div style={{ minHeight: "100vh", background: "#0a0a0f", display: "flex", alignItems: "center", justifyContent: "center" }}>
-      <div style={{ width: "20px", height: "20px", border: "2px solid #333", borderTopColor: "#6366f1", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div className="spinner" />
     </div>
   );
 
@@ -114,66 +89,78 @@ export default function Home() {
   return <Dashboard session={session} />;
 }
 
+// ── Login ──────────────────────────────────────────────────── //
 function LoginPage() {
   return (
-    <main style={{
-      minHeight: "100vh", background: "#0a0a0f",
-      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-      gap: "32px", fontFamily: "'DM Sans', system-ui, sans-serif",
-    }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');`}</style>
+    <main style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center", position: "relative", overflow: "hidden" }}>
+      {/* Ambient glow */}
+      <div style={{ position: "absolute", width: "700px", height: "700px", borderRadius: "50%", background: "radial-gradient(circle, rgba(124,106,247,0.07) 0%, transparent 70%)", top: "50%", left: "50%", transform: "translate(-50%,-50%)", pointerEvents: "none" }} />
 
-      <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: "13px", letterSpacing: "0.15em", color: "#6366f1", marginBottom: "16px", textTransform: "uppercase", fontWeight: 500 }}>
-          Second Brain
+      <div className="fade-up" style={{ width: "320px", textAlign: "center", position: "relative" }}>
+        {/* Logo mark */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", marginBottom: "36px" }}>
+          <div style={{ width: "38px", height: "38px", background: "var(--accent-dim)", border: "1px solid var(--accent-border)", borderRadius: "11px", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent)" }}>
+            <IconBrain />
+          </div>
+          <span style={{ fontSize: "16px", fontWeight: 600, color: "var(--text-1)", letterSpacing: "-0.02em" }}>Second Brain</span>
         </div>
-        <h1 style={{ fontSize: "42px", fontWeight: 300, color: "#f0f0f0", margin: "0 0 12px", letterSpacing: "-1.5px", lineHeight: 1 }}>
-          Everything you read,<br />remembered.
-        </h1>
-        <p style={{ fontSize: "15px", color: "#555", margin: 0 }}>Capture anything. Ask anything. Find anything.</p>
-      </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: "10px", width: "280px" }}>
-        <button
-          onClick={() => supabase.auth.signInWithOAuth({ provider: "github", options: { redirectTo: `${window.location.origin}/auth/callback` } })}
-          style={{ padding: "12px 20px", background: "#f0f0f0", color: "#0a0a0f", border: "none", borderRadius: "10px", fontSize: "14px", fontWeight: 500, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", fontFamily: "inherit" }}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
-          </svg>
-          Continue with GitHub
-        </button>
-        <button
-          onClick={() => supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: `${window.location.origin}/auth/callback` } })}
-          style={{ padding: "12px 20px", background: "transparent", color: "#f0f0f0", border: "1px solid #222", borderRadius: "10px", fontSize: "14px", fontWeight: 500, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", fontFamily: "inherit" }}
-        >
-          <svg width="16" height="16" viewBox="0 0 48 48">
-            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-          </svg>
-          Continue with Google
-        </button>
+        {/* Headline */}
+        <h1 style={{ fontSize: "38px", fontWeight: 300, color: "var(--text-1)", margin: "0 0 12px", letterSpacing: "-2px", lineHeight: 1.1 }}>
+          Everything you read,<br />
+          <span style={{ color: "var(--accent)" }}>remembered.</span>
+        </h1>
+        <p style={{ fontSize: "14.5px", color: "var(--text-2)", margin: "0 0 40px", lineHeight: 1.65 }}>
+          Capture articles. Ask questions.<br />Surface what matters.
+        </p>
+
+        {/* Auth buttons */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          <button
+            onClick={() => supabase.auth.signInWithOAuth({ provider: "github", options: { redirectTo: `${window.location.origin}/auth/callback` } })}
+            style={{ padding: "12px 20px", background: "var(--text-1)", color: "#0a0a12", border: "none", borderRadius: "var(--radius-sm)", fontSize: "13.5px", fontWeight: 500, display: "flex", alignItems: "center", justifyContent: "center", gap: "9px", transition: "opacity 140ms ease" }}
+            onMouseOver={e => (e.currentTarget.style.opacity = "0.88")}
+            onMouseOut={e => (e.currentTarget.style.opacity = "1")}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+            </svg>
+            Continue with GitHub
+          </button>
+          <button
+            onClick={() => supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: `${window.location.origin}/auth/callback` } })}
+            style={{ padding: "12px 20px", background: "transparent", color: "var(--text-1)", border: "1px solid var(--border-hover)", borderRadius: "var(--radius-sm)", fontSize: "13.5px", fontWeight: 500, display: "flex", alignItems: "center", justifyContent: "center", gap: "9px", transition: "border-color 140ms ease, background 140ms ease" }}
+            onMouseOver={e => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"; e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }}
+            onMouseOut={e => { e.currentTarget.style.borderColor = "var(--border-hover)"; e.currentTarget.style.background = "transparent"; }}
+          >
+            <svg width="15" height="15" viewBox="0 0 48 48">
+              <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+              <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+              <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+              <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+            </svg>
+            Continue with Google
+          </button>
+        </div>
       </div>
     </main>
   );
 }
 
+// ── Dashboard ──────────────────────────────────────────────── //
 function Dashboard({ session }: { session: any }) {
-  const [query, setQuery] = useState("");
-  const [answer, setAnswer] = useState("");
-  const [results, setResults] = useState<Result[]>([]);
-  const [documents, setDocuments] = useState<Document[]>([]);
-  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [query, setQuery]               = useState("");
+  const [answer, setAnswer]             = useState("");
+  const [results, setResults]           = useState<Result[]>([]);
+  const [documents, setDocuments]       = useState<Doc[]>([]);
+  const [reminders, setReminders]       = useState<Reminder[]>([]);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [feedLoading, setFeedLoading] = useState(true);
-  const [mode, setMode] = useState<"feed" | "search">("feed");
+  const [loading, setLoading]           = useState(false);
+  const [feedLoading, setFeedLoading]   = useState(true);
+  const [mode, setMode]                 = useState<"feed" | "search">("feed");
   const inputRef = useRef<HTMLInputElement>(null);
-  const pollRef = useRef<NodeJS.Timeout | null>(null);
+  const pollRef  = useRef<NodeJS.Timeout | null>(null);
 
-  // --------------- LOAD FEED --------------- //
   const loadFeed = useCallback(async () => {
     try {
       const [docsRes, remsRes, recsRes] = await Promise.all([
@@ -184,300 +171,237 @@ function Dashboard({ session }: { session: any }) {
       setDocuments(Array.isArray(docsRes) ? docsRes : []);
       setReminders(Array.isArray(remsRes) ? remsRes : []);
       setRecommendations(Array.isArray(recsRes) ? recsRes : []);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setFeedLoading(false);
-    }
+    } catch (e) { console.error(e); }
+    finally { setFeedLoading(false); }
   }, []);
 
-  useEffect(() => {
-    loadFeed();
-  }, [loadFeed]);
+  useEffect(() => { loadFeed(); }, [loadFeed]);
 
-  // --------------- REAL-TIME DOM UPDATES --------------- //
-  // Poll every 30 seconds when in feed mode to pick up new captures
-  // without requiring a page refresh
+  // Poll every 30 s in feed mode to surface new captures without a page refresh
   useEffect(() => {
     if (mode !== "feed") return;
-
     pollRef.current = setInterval(() => {
-      authFetch(`${BACKEND}/documents?limit=20`)
-        .then(r => r.json())
-        .then(docs => {
-          if (!Array.isArray(docs)) return;
-          setDocuments(prev => {
-            // Only update if new captures exist (different length or different first id)
-            if (docs.length !== prev.length || (docs[0]?.id !== prev[0]?.id)) {
-              return docs;
-            }
-            return prev;
-          });
-        })
-        .catch(() => {});
+      authFetch(`${BACKEND}/documents?limit=20`).then(r => r.json()).then(docs => {
+        if (!Array.isArray(docs)) return;
+        setDocuments(prev => (docs.length !== prev.length || docs[0]?.id !== prev[0]?.id) ? docs : prev);
+      }).catch(() => {});
     }, 30000);
-
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [mode]);
 
-  // --------------- SEARCH --------------- //
   const handleSearch = async () => {
     if (!query.trim()) return;
-    setLoading(true);
-    setMode("search");
-    setAnswer("");
-    setResults([]);
-
+    setLoading(true); setMode("search"); setAnswer(""); setResults([]);
     try {
-      const res = await authFetch(`${BACKEND}/answer`, {
-        method: "POST",
-        body: JSON.stringify({ query }),
-      });
+      const res  = await authFetch(`${BACKEND}/answer`, { method: "POST", body: JSON.stringify({ query }) });
       const data = await res.json();
       setAnswer(data.answer || "");
       setResults(data.sources || []);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
   };
 
   const clearSearch = () => {
-    setQuery("");
-    setMode("feed");
-    setAnswer("");
-    setResults([]);
-    // Refresh feed when returning to it
+    setQuery(""); setMode("feed"); setAnswer(""); setResults([]);
     loadFeed();
     inputRef.current?.focus();
   };
 
   return (
-    <main style={{ minHeight: "100vh", background: "#0a0a0f", fontFamily: "'DM Sans', system-ui, sans-serif", color: "#f0f0f0" }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');
-        * { box-sizing: border-box; }
-        ::placeholder { color: #444; }
-        a { color: inherit; text-decoration: none; }
-        ${mdStyles}
-      `}</style>
+    <div className="app-layout">
 
-      <div style={{ maxWidth: "680px", margin: "0 auto", padding: "32px 20px" }}>
-
-        {/* Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "28px" }}>
-          <div
-            onClick={clearSearch}
-            style={{ fontSize: "15px", fontWeight: 600, letterSpacing: "0.05em", color: "#6366f1", cursor: "pointer", textTransform: "uppercase" }}
-          >
-            Second Brain
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-            <span style={{ fontSize: "12px", color: "#333" }}>{session?.user?.email}</span>
-            <button onClick={() => supabase.auth.signOut()}
-              style={{ fontSize: "12px", color: "#555", background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "inherit" }}>
-              Sign out
-            </button>
-          </div>
+      {/* ── Sidebar ─────────────────────────────────── */}
+      <aside className="sidebar">
+        <div className="sidebar-logo" onClick={clearSearch}>
+          <div className="sidebar-logo-icon"><IconBrain /></div>
+          <span className="sidebar-logo-text">Second Brain</span>
         </div>
 
-        {/* Search bar */}
-        <div style={{ position: "relative", marginBottom: "32px" }}>
-          <input
-            ref={inputRef}
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && handleSearch()}
-            placeholder="Ask your second brain..."
-            style={{
-              width: "100%", padding: "14px 110px 14px 18px",
-              background: "#111118", border: "1px solid #1e1e2e",
-              borderRadius: "12px", fontSize: "15px", color: "#f0f0f0",
-              fontFamily: "inherit", transition: "border-color 0.15s",
-            }}
-            onFocus={e => e.target.style.borderColor = "#6366f1"}
-            onBlur={e => e.target.style.borderColor = "#1e1e2e"}
-          />
-          <div style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", display: "flex", gap: "6px" }}>
-            {mode === "search" && (
-              <button onClick={clearSearch}
-                style={{ padding: "6px 10px", background: "transparent", border: "none", color: "#555", cursor: "pointer", fontSize: "18px", lineHeight: 1, fontFamily: "inherit" }}>
-                ×
+        <nav className="sidebar-nav">
+          <div className={`sidebar-item ${mode === "feed" ? "active" : ""}`} onClick={clearSearch}>
+            <IconHome /><span>Home</span>
+          </div>
+        </nav>
+
+        <div className="sidebar-footer">
+          <div className="sidebar-user-email">{session?.user?.email}</div>
+          <button className="sidebar-signout" onClick={() => supabase.auth.signOut()}>Sign out</button>
+        </div>
+      </aside>
+
+      {/* ── Mobile header ───────────────────────────── */}
+      <div className="mobile-header">
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }} onClick={clearSearch}>
+          <div className="sidebar-logo-icon"><IconBrain /></div>
+          <span style={{ fontSize: "14px", fontWeight: 600 }}>Second Brain</span>
+        </div>
+        <button style={{ background: "none", border: "none", color: "var(--text-2)", fontSize: "13px" }} onClick={() => supabase.auth.signOut()}>Sign out</button>
+      </div>
+
+      {/* ── Main content ────────────────────────────── */}
+      <main className="main-content">
+        <div className="content-inner">
+
+          {/* Search bar */}
+          <div className="search-wrap">
+            <div className="search-icon"><IconSearch /></div>
+            <input
+              ref={inputRef}
+              className="search-input"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && handleSearch()}
+              placeholder="Ask your second brain anything..."
+            />
+            <div className="search-actions">
+              {mode === "search" && (
+                <button onClick={clearSearch} style={{ background: "none", border: "none", color: "var(--text-3)", fontSize: "22px", lineHeight: 1, padding: "2px 6px", cursor: "pointer" }}>×</button>
+              )}
+              <button className="btn btn-primary" onClick={handleSearch} disabled={loading} style={{ padding: "7px 16px" }}>
+                {loading
+                  ? <><div className="spinner spinner-sm spinner-white" />Asking</>
+                  : "Ask"}
               </button>
-            )}
-            <button onClick={handleSearch}
-              style={{
-                padding: "7px 14px", background: "#6366f1", border: "none",
-                borderRadius: "8px", color: "white", fontSize: "13px",
-                fontWeight: 500, cursor: "pointer", fontFamily: "inherit"
-              }}>
-              {loading ? "..." : "Ask"}
-            </button>
+            </div>
           </div>
-        </div>
 
-        {/* SEARCH MODE */}
-        {mode === "search" && (
-          <div className="fade-in">
-            {loading && (
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "#555", fontSize: "14px", marginBottom: "24px" }}>
-                <div style={{ width: "14px", height: "14px", border: "1.5px solid #333", borderTopColor: "#6366f1", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-                Thinking...
-              </div>
-            )}
+          {/* ── Search results ──────────────────────── */}
+          {mode === "search" && (
+            <div className="fade-up">
+              {loading && (
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "var(--text-2)", fontSize: "14px", marginBottom: "24px" }}>
+                  <div className="spinner" />
+                  <span>Searching your knowledge base...</span>
+                </div>
+              )}
 
-            {answer && (
-              <div style={{ padding: "20px", background: "#0d0d18", border: "1px solid #1e1e3a", borderRadius: "12px", marginBottom: "24px" }} className="fade-in">
-                <div style={{ fontSize: "11px", color: "#6366f1", marginBottom: "10px", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 500 }}>
-                  Answer
-                </div>
-                <div className="md" style={{ fontSize: "15px", lineHeight: 1.7, color: "#d0d0e0" }}>
-                  <ReactMarkdown>{answer}</ReactMarkdown>
-                </div>
-              </div>
-            )}
-
-            {results.length > 0 && (
-              <div className="fade-in">
-                <div style={{ fontSize: "11px", color: "#444", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                  Sources ({results.length})
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                  {results.map((r, i) => (
-                    <Link key={i} href={`/document/${r.document_id}`}>
-                      <div className="source-card" style={{
-                        padding: "14px 16px", background: "#111118",
-                        border: "1px solid #1a1a28", borderRadius: "10px",
-                        cursor: "pointer", transition: "border-color 0.15s",
-                      }}>
-                        <p style={{ fontSize: "13px", color: "#b0b0c0", lineHeight: 1.6, margin: "0 0 8px" }}>
-                          {r.chunk.slice(0, 200)}{r.chunk.length > 200 ? "..." : ""}
-                        </p>
-                        <div style={{ display: "flex", justifyContent: "space-between" }}>
-                          <span style={{ fontSize: "11px", color: "#444" }}>Doc {r.document_id}</span>
-                          <span style={{ fontSize: "11px", color: "#444" }}>{r.score?.toFixed(3)}</span>
-                        </div>
-                      </div>
-                    </Link>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* FEED MODE */}
-        {mode === "feed" && (
-          <div>
-            {feedLoading ? (
-              <div style={{ color: "#444", fontSize: "14px" }}>Loading your captures...</div>
-            ) : (
-              <>
-                {/* Reminders */}
-                {reminders.length > 0 && (
-                  <div style={{ marginBottom: "28px" }}>
-                    <div style={{ fontSize: "11px", color: "#444", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                      Resurface
+              {answer && (
+                <div className="card fade-up" style={{ padding: "22px 24px", marginBottom: "24px", background: "linear-gradient(135deg, rgba(124,106,247,0.06) 0%, var(--surface) 100%)", borderColor: "var(--accent-border)" }}>
+                  {/* Answer header */}
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
+                    <div style={{ width: "22px", height: "22px", background: "var(--accent-dim)", border: "1px solid var(--accent-border)", borderRadius: "6px", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent)" }}>
+                      <IconBrain />
                     </div>
-                    {reminders.map(r => (
-                      <Link key={r.document_id} href={`/document/${r.document_id}`}>
-                        <div style={{
-                          padding: "12px 16px", background: "#0f0f0a",
-                          border: "1px solid #2a2a1a", borderRadius: "10px", marginBottom: "8px", cursor: "pointer"
-                        }}>
-                          <p style={{ fontSize: "13px", fontWeight: 500, margin: "0 0 3px", color: "#d4c87a" }}>{r.title}</p>
-                          <p style={{ fontSize: "12px", color: "#666", margin: 0 }}>{r.reason}</p>
+                    <span style={{ fontSize: "10.5px", fontWeight: 700, color: "var(--accent)", letterSpacing: "0.09em", textTransform: "uppercase" }}>Answer</span>
+                  </div>
+                  <div className="md" style={{ fontSize: "15px", lineHeight: 1.8, color: "var(--text-1)" }}>
+                    <ReactMarkdown>{answer}</ReactMarkdown>
+                  </div>
+                </div>
+              )}
+
+              {results.length > 0 && (
+                <div className="fade-up">
+                  <div className="section-label">Sources · {results.length}</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    {results.map((r, i) => (
+                      <Link key={i} href={`/document/${r.document_id}`}>
+                        <div className="card card-link source-card">
+                          <p style={{ fontSize: "13.5px", color: "var(--text-1)", lineHeight: 1.7, margin: "0 0 10px" }}>{r.chunk}</p>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{ fontSize: "11px", color: "var(--text-3)" }}>Doc #{r.document_id}</span>
+                            <span style={{ fontSize: "11px", color: "var(--accent)", fontWeight: 500 }}>{(r.score * 100).toFixed(0)}% match</span>
+                          </div>
                         </div>
                       </Link>
                     ))}
                   </div>
-                )}
+                </div>
+              )}
+            </div>
+          )}
 
-                {/* Recommendations */}
-                {recommendations.length > 0 && (
-                  <div style={{ marginBottom: "28px" }}>
-                    <div style={{ fontSize: "11px", color: "#444", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                      You might want to capture
-                    </div>
-                    {recommendations.map((r, i) => (
-                      <div key={i} style={{
-                        padding: "12px 16px", background: "#0a0a14",
-                        border: "1px solid #1a1a2e", borderRadius: "10px", marginBottom: "8px"
-                      }}>
-                        <p style={{ fontSize: "13px", fontWeight: 500, margin: "0 0 3px", color: "#6366f1" }}>{r.topic}</p>
-                        <p style={{ fontSize: "12px", color: "#555", margin: 0 }}>{r.reason}</p>
+          {/* ── Feed ────────────────────────────────── */}
+          {mode === "feed" && (
+            <div>
+              {feedLoading ? (
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "var(--text-2)", fontSize: "14px" }}>
+                  <div className="spinner" /><span>Loading your library...</span>
+                </div>
+              ) : (
+                <>
+                  {/* Reminders — resurface stale captures */}
+                  {reminders.length > 0 && (
+                    <div className="section">
+                      <div className="section-label">Resurface</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
+                        {reminders.map(r => (
+                          <Link key={r.document_id} href={`/document/${r.document_id}`}>
+                            <div className="card card-hover" style={{ padding: "14px 18px", borderColor: "var(--amber-border)", background: "var(--amber-dim)" }}>
+                              <p style={{ fontSize: "13.5px", fontWeight: 500, margin: "0 0 4px", color: "var(--amber)" }}>{r.title}</p>
+                              <p style={{ fontSize: "12.5px", color: "var(--text-2)", margin: 0, lineHeight: 1.5 }}>{r.reason}</p>
+                            </div>
+                          </Link>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Recent captures */}
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-                    <div style={{ fontSize: "11px", color: "#444", textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                      Recent — {documents.length} captures
-                    </div>
-                    {/* Manual refresh button */}
-                    <button
-                      onClick={loadFeed}
-                      style={{ fontSize: "11px", color: "#333", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit" }}
-                      title="Refresh feed"
-                    >
-                      ↺
-                    </button>
-                  </div>
-
-                  {documents.length === 0 ? (
-                    <div style={{
-                      padding: "40px", textAlign: "center",
-                      border: "1px dashed #1e1e2e", borderRadius: "12px",
-                      color: "#444", fontSize: "14px", lineHeight: 1.6,
-                    }}>
-                      Nothing captured yet.<br />
-                      <span style={{ fontSize: "12px", color: "#333" }}>
-                        Use Ctrl+Shift+9 in the extension to capture a page.
-                      </span>
-                    </div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                      {documents.map(doc => (
-                        <Link key={doc.id} href={`/document/${doc.id}`}>
-                          <div className="doc-card" style={{
-                            padding: "14px 16px", background: "#0d0d14",
-                            border: "1px solid #16161f", borderRadius: "10px",
-                            cursor: "pointer", transition: "border-color 0.15s, background 0.15s",
-                          }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
-                              <p style={{ fontSize: "14px", fontWeight: 500, margin: 0, color: "#e0e0f0", flex: 1, marginRight: "12px" }}>
-                                {doc.title || "Untitled"}
-                              </p>
-                              <span style={{ fontSize: "11px", color: "#444", whiteSpace: "nowrap" }}>
-                                {timeAgo(doc.captured_at)}
-                              </span>
-                            </div>
-                            {doc.excerpt && (
-                              <p style={{ fontSize: "13px", color: "#555", margin: "0 0 8px", lineHeight: 1.5 }}>
-                                {doc.excerpt.slice(0, 120)}...
-                              </p>
-                            )}
-                            <div style={{ display: "flex", gap: "12px" }}>
-                              {doc.url && <span style={{ fontSize: "11px", color: "#383848" }}>{hostname(doc.url)}</span>}
-                              {doc.user_note && <span style={{ fontSize: "11px", color: "#6366f1" }}>has note</span>}
-                            </div>
-                          </div>
-                        </Link>
-                      ))}
                     </div>
                   )}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-      </div>
-    </main>
+
+                  {/* Recommendations — knowledge gaps detected from low-result queries */}
+                  {recommendations.length > 0 && (
+                    <div className="section">
+                      <div className="section-label">Knowledge gaps</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
+                        {recommendations.map((r, i) => (
+                          <div key={i} className="card" style={{ padding: "14px 18px", borderColor: "var(--accent-border)", background: "var(--accent-dim)" }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
+                              <div>
+                                <p style={{ fontSize: "13.5px", fontWeight: 500, margin: "0 0 3px", color: "var(--accent)" }}>{r.topic}</p>
+                                <p style={{ fontSize: "12.5px", color: "var(--text-2)", margin: 0, lineHeight: 1.5 }}>{r.reason}</p>
+                              </div>
+                              <span className="badge badge-accent" style={{ flexShrink: 0, marginTop: "2px" }}>capture</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Library — recent captures */}
+                  <div className="section">
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                      <div className="section-label" style={{ margin: 0 }}>Library · {documents.length}</div>
+                      <button onClick={loadFeed} title="Refresh" style={{ background: "none", border: "none", color: "var(--text-3)", fontSize: "17px", lineHeight: 1, cursor: "pointer", padding: "2px 4px", transition: "color var(--t)" }}
+                        onMouseOver={e => e.currentTarget.style.color = "var(--text-2)"}
+                        onMouseOut={e => e.currentTarget.style.color = "var(--text-3)"}>↺</button>
+                    </div>
+
+                    {documents.length === 0 ? (
+                      <div className="empty-state">
+                        <p>Nothing captured yet.<br />
+                          <span style={{ fontSize: "12px", color: "var(--text-3)" }}>Use Ctrl+Shift+9 in the extension to save a page.</span>
+                        </p>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                        {documents.map(doc => (
+                          <Link key={doc.id} href={`/document/${doc.id}`}>
+                            <div className="card card-link" style={{ padding: "14px 18px" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "14px", marginBottom: doc.excerpt ? "6px" : 0 }}>
+                                <p style={{ fontSize: "14px", fontWeight: 500, margin: 0, color: "var(--text-1)", lineHeight: 1.4, flex: 1 }}>{doc.title || "Untitled"}</p>
+                                <span style={{ fontSize: "11px", color: "var(--text-3)", whiteSpace: "nowrap", flexShrink: 0, paddingTop: "2px" }}>{timeAgo(doc.captured_at)}</span>
+                              </div>
+                              {doc.excerpt && (
+                                <p style={{ fontSize: "13px", color: "var(--text-2)", margin: "0 0 8px", lineHeight: 1.55 }}>
+                                  {doc.excerpt.slice(0, 200)}{doc.excerpt.length > 200 ? "…" : ""}
+                                </p>
+                              )}
+                              <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                                {doc.url && <span style={{ fontSize: "11px", color: "var(--text-3)" }}>{hostname(doc.url)}</span>}
+                                {doc.user_note && <span className="badge badge-accent" style={{ fontSize: "10px", padding: "1px 7px" }}>note</span>}
+                              </div>
+                            </div>
+                          </Link>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
   );
 }

@@ -13,64 +13,82 @@ async function authFetch(url: string, options: RequestInit = {}) {
   if (!session) throw new Error("Not authenticated");
   return fetch(url, {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${session.access_token}`,
-      ...options.headers,
-    },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}`, ...options.headers },
   });
 }
 
-function timeAgo(dateStr: string) {
-  const normalized = dateStr.endsWith("Z") ? dateStr : dateStr + "Z";
-  const diff = Date.now() - new Date(normalized).getTime();
+function formatDate(dateStr: string) {
+  const d = new Date(dateStr.endsWith("Z") ? dateStr : dateStr + "Z");
+  const diff = Date.now() - d.getTime();
   const days = Math.floor(diff / 86400000);
   if (days === 0) return "Today";
   if (days === 1) return "Yesterday";
-  if (days < 30) return `${days} days ago`;
-  return new Date(normalized).toLocaleDateString();
+  if (days < 14) return `${days} days ago`;
+  return d.toLocaleDateString("en", { month: "long", day: "numeric", year: "numeric" });
 }
 
 type Message = { role: "user" | "assistant"; content: string };
 
-const mdStyles = `
-  .md p { margin: 0 0 10px; }
-  .md p:last-child { margin: 0; }
-  .md strong { color: #e0e0f0; font-weight: 600; }
-  .md em { color: #a0a0c0; font-style: italic; }
-  .md ul, .md ol { padding-left: 20px; margin: 8px 0; }
-  .md li { margin-bottom: 5px; line-height: 1.6; }
-  .md h1, .md h2, .md h3 { color: #e0e0f0; font-weight: 500; margin: 14px 0 6px; }
-  .md h1 { font-size: 18px; }
-  .md h2 { font-size: 16px; }
-  .md h3 { font-size: 14px; }
-  .md code { background: #1a1a2e; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-family: monospace; color: #a0c0f0; }
-  .md pre { background: #1a1a2e; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 10px 0; }
-  .md pre code { background: none; padding: 0; }
-  .md blockquote { border-left: 3px solid #6366f1; padding-left: 12px; margin: 10px 0; color: #888; }
-  .md a { color: #6366f1; }
-`;
+// ── Icons ──────────────────────────────────────────────────── //
+const IconArrow = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="15 18 9 12 15 6"/>
+  </svg>
+);
 
+const IconBrain = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/>
+    <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>
+    <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/>
+  </svg>
+);
+
+const IconChat = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+  </svg>
+);
+
+const IconTrash = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="3 6 5 6 21 6"/>
+    <path d="M19 6l-1 14H6L5 6"/>
+    <path d="M10 11v6M14 11v6"/>
+    <path d="M9 6V4h6v2"/>
+  </svg>
+);
+
+const IconExternal = () => (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+    <polyline points="15 3 21 3 21 9"/>
+    <line x1="10" y1="14" x2="21" y2="3"/>
+  </svg>
+);
+
+// ── Document page ──────────────────────────────────────────── //
 export default function DocumentPage() {
   const params = useParams();
   const router = useRouter();
-  const id = params?.id as string;
+  const id     = params?.id as string;
 
-  const [doc, setDoc] = useState<any>(null);
-  const [related, setRelated] = useState<any[]>([]);
-  const [summary, setSummary] = useState("");
+  const [doc, setDoc]                   = useState<any>(null);
+  const [related, setRelated]           = useState<any[]>([]);
+  const [summary, setSummary]           = useState("");
   const [summaryLoading, setSummaryLoading] = useState(false);
-  const [note, setNote] = useState("");
-  const [savingNote, setSavingNote] = useState(false);
-  const [noteSaved, setNoteSaved] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [showFullContent, setShowFullContent] = useState(false);
-  const [chatMode, setChatMode] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [chatInput, setChatInput] = useState("");
-  const [chatLoading, setChatLoading] = useState(false);
+  const [note, setNote]                 = useState("");
+  const [savingNote, setSavingNote]     = useState(false);
+  const [noteSaved, setNoteSaved]       = useState(false);
+  const [loading, setLoading]           = useState(true);
+  const [showContent, setShowContent]   = useState(false);
+  const [chatMode, setChatMode]         = useState(false);
+  const [messages, setMessages]         = useState<Message[]>([]);
+  const [chatInput, setChatInput]       = useState("");
+  const [chatLoading, setChatLoading]   = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
+  // Load document + related on mount
   useEffect(() => {
     if (!id) return;
     Promise.all([
@@ -87,240 +105,240 @@ export default function DocumentPage() {
     }).catch(console.error).finally(() => setLoading(false));
   }, [id]);
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  // Auto-scroll chat to newest message
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
+  // Generate AI summary once the document is loaded
   const loadSummary = async () => {
     if (summary) return;
     setSummaryLoading(true);
     try {
-      const res = await authFetch(`${BACKEND}/documents/${id}/summarise`, { method: "POST" });
+      const res  = await authFetch(`${BACKEND}/documents/${id}/summarise`, { method: "POST" });
       const data = await res.json();
       setSummary(data.summary || "");
-    } catch {
-      setSummary("Could not generate summary.");
-    } finally {
-      setSummaryLoading(false);
-    }
+    } catch { setSummary("Could not generate summary."); }
+    finally { setSummaryLoading(false); }
   };
-
-  useEffect(() => {
-    if (doc) loadSummary();
-  }, [doc]);
+  useEffect(() => { if (doc) loadSummary(); }, [doc]);
 
   const saveNote = async () => {
     setSavingNote(true);
     try {
-      await authFetch(`${BACKEND}/documents/${id}/note`, {
-        method: "POST",
-        body: JSON.stringify({ note }),
-      });
+      await authFetch(`${BACKEND}/documents/${id}/note`, { method: "POST", body: JSON.stringify({ note }) });
       setNoteSaved(true);
       setTimeout(() => setNoteSaved(false), 2000);
-    } finally {
-      setSavingNote(false);
-    }
+    } finally { setSavingNote(false); }
   };
 
   const sendChat = async () => {
     if (!chatInput.trim() || chatLoading) return;
-    const userMsg: Message = { role: "user", content: chatInput };
-    const newMessages = [...messages, userMsg];
+    const userMsg: Message    = { role: "user", content: chatInput };
+    const newMessages         = [...messages, userMsg];
     setMessages(newMessages);
     setChatInput("");
     setChatLoading(true);
     try {
-      const res = await authFetch(`${BACKEND}/chat`, {
-        method: "POST",
-        body: JSON.stringify({ messages: newMessages, document_id: parseInt(id) }),
-      });
+      const res  = await authFetch(`${BACKEND}/chat`, { method: "POST", body: JSON.stringify({ messages: newMessages, document_id: parseInt(id) }) });
       const data = await res.json();
       setMessages(prev => [...prev, { role: "assistant", content: data.reply }]);
     } catch {
       setMessages(prev => [...prev, { role: "assistant", content: "Something went wrong. Please try again." }]);
-    } finally {
-      setChatLoading(false);
-    }
+    } finally { setChatLoading(false); }
   };
 
+  // ── Loading / not found states ──────────────────────────── //
   if (loading) return (
-    <div style={{ minHeight: "100vh", background: "#0a0a0f", display: "flex", alignItems: "center", justifyContent: "center" }}>
-      <div style={{ width: "20px", height: "20px", border: "2px solid #333", borderTopColor: "#6366f1", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div className="spinner" />
     </div>
   );
-
   if (!doc) return null;
 
+  const srcHost = (() => { try { return new URL(doc.url).hostname.replace("www.", ""); } catch { return doc.url; } })();
+
   return (
-    <main style={{ minHeight: "100vh", background: "#0a0a0f", fontFamily: "'DM Sans', system-ui, sans-serif", color: "#f0f0f0" }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');
-        @keyframes spin { to { transform: rotate(360deg); } }
-        * { box-sizing: border-box; }
-        textarea:focus, input:focus { outline: none; }
-        a { color: inherit; text-decoration: none; }
-        ${mdStyles}
-      `}</style>
+    <div style={{ minHeight: "100vh", background: "var(--bg)", color: "var(--text-1)" }}>
 
-      <div style={{ maxWidth: "720px", margin: "0 auto", padding: "32px 20px" }}>
-
+      {/* ── Sticky top nav ──────────────────────────── */}
+      <nav style={{
+        position: "sticky", top: 0, zIndex: 20,
+        height: "52px",
+        background: "rgba(7,7,14,0.88)",
+        backdropFilter: "blur(14px)",
+        WebkitBackdropFilter: "blur(14px)",
+        borderBottom: "1px solid var(--border)",
+        padding: "0 28px",
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+      }}>
+        {/* Back link */}
         <Link href="/">
-          <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "13px", color: "#555", marginBottom: "28px", cursor: "pointer" }}>
-            ← Back
+          <div
+            style={{ display: "flex", alignItems: "center", gap: "5px", color: "var(--text-2)", fontSize: "13px", transition: "color var(--t)", cursor: "pointer" }}
+            onMouseOver={e => e.currentTarget.style.color = "var(--text-1)"}
+            onMouseOut={e => e.currentTarget.style.color = "var(--text-2)"}
+          >
+            <IconArrow /><span>Back</span>
           </div>
         </Link>
 
-        <h1 style={{ fontSize: "24px", fontWeight: 600, color: "#e0e0f0", margin: "0 0 10px", lineHeight: 1.3 }}>
-          {doc.title || "Untitled"}
-        </h1>
+        {/* Actions */}
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button
+            className="btn btn-ghost"
+            onClick={() => setChatMode(!chatMode)}
+            style={{
+              padding: "6px 12px", fontSize: "12.5px", gap: "6px",
+              background: chatMode ? "var(--accent-dim)" : undefined,
+              borderColor: chatMode ? "var(--accent-border)" : undefined,
+              color: chatMode ? "var(--accent)" : undefined,
+            }}
+          >
+            <IconChat />Chat
+          </button>
+          <button
+            className="btn btn-danger"
+            onClick={async () => {
+              if (!confirm("Delete this capture? This cannot be undone.")) return;
+              await authFetch(`${BACKEND}/documents/${id}`, { method: "DELETE" });
+              router.push("/");
+            }}
+            style={{ padding: "6px 12px", fontSize: "12.5px", gap: "6px" }}
+          >
+            <IconTrash />Delete
+          </button>
+        </div>
+      </nav>
 
-        <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", marginBottom: "24px" }}>
-          {doc.url && (
-            <a href={doc.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: "12px", color: "#6366f1" }}>
-              {(() => { try { return new URL(doc.url).hostname; } catch { return doc.url; } })()}
-            </a>
-          )}
-          {doc.byline && <span style={{ fontSize: "12px", color: "#555" }}>{doc.byline}</span>}
-          <span style={{ fontSize: "12px", color: "#444" }}>{timeAgo(doc.captured_at)}</span>
-          {doc.word_count && <span style={{ fontSize: "12px", color: "#444" }}>{doc.word_count.toLocaleString()} words</span>}
+      {/* ── Page content ────────────────────────────── */}
+      <div style={{ maxWidth: "720px", margin: "0 auto", padding: "52px 36px 96px" }}>
+
+        {/* Document header */}
+        <div style={{ marginBottom: "36px" }} className="fade-up">
+          <h1 style={{ fontSize: "27px", fontWeight: 500, color: "var(--text-1)", margin: "0 0 16px", lineHeight: 1.3, letterSpacing: "-0.4px" }}>
+            {doc.title || "Untitled"}
+          </h1>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 18px", alignItems: "center" }}>
+            {doc.url && (
+              <a href={doc.url} target="_blank" rel="noopener noreferrer"
+                style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "12.5px", color: "var(--accent)", transition: "opacity var(--t)" }}
+                onMouseOver={e => e.currentTarget.style.opacity = "0.75"}
+                onMouseOut={e => e.currentTarget.style.opacity = "1"}>
+                {srcHost}<IconExternal />
+              </a>
+            )}
+            {doc.byline && <span style={{ fontSize: "12.5px", color: "var(--text-2)" }}>{doc.byline}</span>}
+            <span style={{ fontSize: "12.5px", color: "var(--text-3)" }}>{formatDate(doc.captured_at)}</span>
+            {doc.word_count && <span style={{ fontSize: "12.5px", color: "var(--text-3)" }}>{doc.word_count.toLocaleString()} words</span>}
+          </div>
         </div>
 
-        {/* AI Summary */}
-        <div style={{ padding: "16px 20px", background: "#0d0d18", border: "1px solid #1e1e3a", borderRadius: "12px", marginBottom: "20px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-            <span style={{ fontSize: "11px", color: "#6366f1", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 500 }}>
-              AI Summary
-            </span>
-            {!chatMode && (
-              <button onClick={() => setChatMode(true)}
-                style={{ fontSize: "12px", color: "#6366f1", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit" }}>
-                Continue in chat →
-              </button>
-            )}
+        {/* AI Summary card */}
+        <div className="card fade-up" style={{ padding: "20px 24px", marginBottom: "20px", background: "linear-gradient(135deg, rgba(124,106,247,0.05) 0%, var(--surface) 60%)", borderColor: "var(--accent-border)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "13px" }}>
+            <div style={{ width: "22px", height: "22px", background: "var(--accent-dim)", border: "1px solid var(--accent-border)", borderRadius: "7px", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent)" }}>
+              <IconBrain />
+            </div>
+            <span style={{ fontSize: "10.5px", fontWeight: 700, color: "var(--accent)", letterSpacing: "0.09em", textTransform: "uppercase" }}>AI Summary</span>
           </div>
           {summaryLoading ? (
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#444", fontSize: "13px" }}>
-              <div style={{ width: "12px", height: "12px", border: "1.5px solid #333", borderTopColor: "#6366f1", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-              Summarising...
+            <div style={{ display: "flex", alignItems: "center", gap: "9px", color: "var(--text-2)", fontSize: "13.5px" }}>
+              <div className="spinner spinner-sm" /><span>Summarising...</span>
             </div>
           ) : (
-            <div className="md" style={{ fontSize: "14px", color: "#a0a0c0", lineHeight: 1.7 }}>
+            <div className="md" style={{ fontSize: "14.5px", color: "var(--text-2)", lineHeight: 1.8 }}>
               <ReactMarkdown>{summary}</ReactMarkdown>
             </div>
           )}
         </div>
 
-        {/* Chat mode */}
+        {/* Chat panel */}
         {chatMode && (
-          <div style={{ border: "1px solid #1a1a2e", borderRadius: "12px", marginBottom: "20px", overflow: "hidden" }}>
-            <div style={{ padding: "12px 16px", borderBottom: "1px solid #1a1a2e", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: "12px", color: "#6366f1", fontWeight: 500 }}>Chat about this capture</span>
-              <button onClick={() => setChatMode(false)}
-                style={{ fontSize: "18px", color: "#444", background: "none", border: "none", cursor: "pointer", lineHeight: 1 }}>×</button>
+          <div className="card fade-up" style={{ marginBottom: "20px", overflow: "hidden" }}>
+            <div style={{ padding: "12px 18px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+                <IconChat />
+                <span style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--accent)" }}>Chat about this capture</span>
+              </div>
+              <button onClick={() => setChatMode(false)} style={{ background: "none", border: "none", color: "var(--text-3)", fontSize: "22px", lineHeight: 1, cursor: "pointer", padding: "0 2px" }}>×</button>
             </div>
 
-            <div style={{ maxHeight: "400px", overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
+            {/* Messages */}
+            <div style={{ minHeight: "100px", maxHeight: "400px", overflowY: "auto", padding: "18px", display: "flex", flexDirection: "column", gap: "10px" }}>
               {messages.length === 0 && (
-                <p style={{ fontSize: "13px", color: "#444", margin: 0 }}>Ask anything about this capture...</p>
+                <p style={{ fontSize: "13px", color: "var(--text-3)", margin: 0, textAlign: "center", padding: "20px 0" }}>Ask anything about this capture...</p>
               )}
               {messages.map((msg, i) => (
-                <div key={i} style={{
-                  alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
-                  maxWidth: "85%",
-                  padding: "10px 14px",
-                  borderRadius: msg.role === "user" ? "12px 12px 4px 12px" : "12px 12px 12px 4px",
-                  background: msg.role === "user" ? "#6366f1" : "#111118",
-                  border: msg.role === "assistant" ? "1px solid #1a1a28" : "none",
-                  fontSize: "14px",
-                  lineHeight: 1.6,
-                  color: msg.role === "user" ? "white" : "#c0c0d0",
-                }}>
-                  {msg.role === "assistant" ? (
-                    <div className="md">
-                      <ReactMarkdown>{msg.content}</ReactMarkdown>
-                    </div>
-                  ) : msg.content}
+                <div key={i} className={msg.role === "user" ? "chat-bubble-user" : "chat-bubble-ai"}>
+                  {msg.role === "assistant"
+                    ? <div className="md"><ReactMarkdown>{msg.content}</ReactMarkdown></div>
+                    : msg.content}
                 </div>
               ))}
               {chatLoading && (
-                <div style={{ alignSelf: "flex-start", display: "flex", alignItems: "center", gap: "8px", color: "#444", fontSize: "13px" }}>
-                  <div style={{ width: "12px", height: "12px", border: "1.5px solid #333", borderTopColor: "#6366f1", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-                  Thinking...
+                <div className="chat-bubble-ai" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <div className="spinner spinner-sm" /><span style={{ color: "var(--text-2)", fontSize: "13px" }}>Thinking...</span>
                 </div>
               )}
               <div ref={chatEndRef} />
             </div>
 
-            <div style={{ padding: "12px 16px", borderTop: "1px solid #1a1a2e", display: "flex", gap: "8px" }}>
+            {/* Chat input */}
+            <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border)", display: "flex", gap: "8px" }}>
               <input
+                className="input"
                 value={chatInput}
                 onChange={e => setChatInput(e.target.value)}
                 onKeyDown={e => e.key === "Enter" && !e.shiftKey && sendChat()}
                 placeholder="Ask something..."
-                style={{
-                  flex: 1, padding: "8px 12px", background: "#111118",
-                  border: "1px solid #1a1a28", borderRadius: "8px",
-                  fontSize: "13px", color: "#f0f0f0", fontFamily: "inherit"
-                }}
+                style={{ flex: 1, padding: "8px 12px" }}
               />
-              <button onClick={sendChat} disabled={chatLoading}
-                style={{
-                  padding: "8px 16px", background: "#6366f1", border: "none",
-                  borderRadius: "8px", color: "white", fontSize: "13px",
-                  cursor: "pointer", fontFamily: "inherit",
-                  opacity: chatLoading ? 0.6 : 1
-                }}>
-                Send
+              <button className="btn btn-primary" onClick={sendChat} disabled={chatLoading} style={{ padding: "8px 16px" }}>
+                {chatLoading ? <div className="spinner spinner-sm spinner-white" /> : "Send"}
               </button>
             </div>
           </div>
         )}
 
         {/* Full content toggle */}
-        <div style={{ marginBottom: "20px" }}>
+        <div style={{ marginBottom: "28px" }}>
           <button
-            onClick={() => setShowFullContent(!showFullContent)}
-            style={{ fontSize: "13px", color: "#555", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", padding: 0 }}
+            className="btn btn-ghost"
+            onClick={() => setShowContent(!showContent)}
+            style={{ padding: "6px 14px", fontSize: "12.5px" }}
           >
-            {showFullContent ? "Hide full content ↑" : "Show full content ↓"}
+            {showContent ? "↑ Hide content" : "↓ Show full content"}
           </button>
-          {showFullContent && doc.content && (
-            <div style={{
-              marginTop: "12px", padding: "20px", background: "#0d0d14",
-              border: "1px solid #16161f", borderRadius: "10px",
-              fontSize: "14px", color: "#888", lineHeight: 1.8,
-              maxHeight: "500px", overflowY: "auto", whiteSpace: "pre-wrap"
-            }}>
-              {doc.content}
+          {showContent && doc.content && (
+            <div className="card fade-up" style={{ marginTop: "12px", padding: "24px 26px", maxHeight: "560px", overflowY: "auto" }}>
+              <p style={{ fontSize: "14.5px", color: "var(--text-2)", lineHeight: 1.9, whiteSpace: "pre-wrap", margin: 0 }}>{doc.content}</p>
             </div>
           )}
         </div>
 
-        {/* Note */}
-        <div style={{ marginBottom: "24px" }}>
-          <div style={{ fontSize: "11px", color: "#444", marginBottom: "10px", textTransform: "uppercase", letterSpacing: "0.1em" }}>Your note</div>
+        <div className="divider" />
+
+        {/* Your note */}
+        <div style={{ marginBottom: "30px" }}>
+          <div className="section-label" style={{ marginBottom: "10px" }}>Your note</div>
           <textarea
+            className="textarea"
             value={note}
             onChange={e => setNote(e.target.value)}
             placeholder="Why did you save this? What's important about it?"
-            style={{
-              width: "100%", minHeight: "80px", padding: "12px 14px",
-              background: "#111118", border: "1px solid #1a1a28",
-              borderRadius: "10px", fontSize: "14px", color: "#d0d0e0",
-              lineHeight: 1.6, resize: "vertical", fontFamily: "inherit",
-            }}
+            style={{ minHeight: "90px" }}
           />
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "8px" }}>
-            <button onClick={saveNote} disabled={savingNote}
+            <button
+              className="btn btn-primary"
+              onClick={saveNote}
+              disabled={savingNote}
               style={{
-                padding: "7px 16px",
-                background: noteSaved ? "#1a2e1a" : "#6366f1",
-                border: "none", borderRadius: "8px",
-                color: noteSaved ? "#4ade80" : "white",
-                fontSize: "13px", fontWeight: 500, cursor: "pointer", fontFamily: "inherit"
-              }}>
+                padding: "7px 18px",
+                background: noteSaved ? "rgba(74,222,128,0.12)" : undefined,
+                color: noteSaved ? "var(--green)" : undefined,
+                border: noteSaved ? "1px solid rgba(74,222,128,0.25)" : undefined,
+              }}
+            >
               {noteSaved ? "Saved ✓" : savingNote ? "Saving..." : "Save note"}
             </button>
           </div>
@@ -328,24 +346,27 @@ export default function DocumentPage() {
 
         {/* Related captures */}
         {related.length > 0 && (
-          <div style={{ marginBottom: "24px" }}>
-            <div style={{ fontSize: "11px", color: "#444", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.1em" }}>
-              Related captures
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+          <div style={{ marginBottom: "30px" }}>
+            <div className="section-label" style={{ marginBottom: "12px" }}>Related captures</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
               {related.map(r => (
                 <Link key={r.id} href={`/document/${r.id}`}>
-                  <div style={{
-                    padding: "12px 16px", background: "#0d0d14",
-                    border: "1px solid #16161f", borderRadius: "10px", cursor: "pointer",
-                    transition: "border-color 0.15s"
-                  }}>
-                    <p style={{ fontSize: "13px", fontWeight: 500, margin: "0 0 4px", color: "#c0c0d0" }}>{r.title}</p>
-                    {r.excerpt && (
-                      <p style={{ fontSize: "12px", color: "#555", margin: 0, lineHeight: 1.4 }}>
-                        {r.excerpt.slice(0, 100)}...
-                      </p>
-                    )}
+                  <div className="card card-link" style={{ padding: "13px 18px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
+                      <div style={{ flex: 1 }}>
+                        <p style={{ fontSize: "13.5px", fontWeight: 500, margin: "0 0 3px", color: "var(--text-1)" }}>{r.title}</p>
+                        {r.excerpt && (
+                          <p style={{ fontSize: "12.5px", color: "var(--text-2)", margin: 0, lineHeight: 1.5 }}>
+                            {r.excerpt.slice(0, 100)}{r.excerpt.length > 100 ? "…" : ""}
+                          </p>
+                        )}
+                      </div>
+                      {r.similarity && (
+                        <span style={{ fontSize: "11px", color: "var(--text-3)", flexShrink: 0, paddingTop: "2px" }}>
+                          {(r.similarity * 100).toFixed(0)}%
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </Link>
               ))}
@@ -353,24 +374,7 @@ export default function DocumentPage() {
           </div>
         )}
 
-        {/* Delete */}
-        <div style={{ borderTop: "1px solid #111", paddingTop: "20px" }}>
-          <button
-            onClick={async () => {
-              if (!confirm("Delete this capture?")) return;
-              await authFetch(`${BACKEND}/documents/${id}`, { method: "DELETE" });
-              router.push("/");
-            }}
-            style={{
-              padding: "7px 14px", background: "transparent",
-              border: "1px solid #2a1a1a", borderRadius: "8px",
-              color: "#633", fontSize: "12px", cursor: "pointer", fontFamily: "inherit"
-            }}>
-            Delete capture
-          </button>
-        </div>
-
       </div>
-    </main>
+    </div>
   );
 }
