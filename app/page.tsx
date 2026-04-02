@@ -39,6 +39,38 @@ function hostname(url: string) {
   try { return new URL(url).hostname.replace("www.", ""); } catch { return ""; }
 }
 
+/**
+ * Trims a stored chunk to the last complete sentence so that
+ * mid-word / mid-sentence artifacts from the old chunking pipeline
+ * are never shown to the user.
+ *
+ * - If the chunk already ends with sentence punctuation → return as-is.
+ * - Otherwise find the last .  !  ? and cut there.
+ * - If no boundary is found (e.g. a single run-on fragment) → return as-is
+ *   so we never silently discard all content.
+ */
+function cleanChunk(text: string): string {
+  const t = text.trim();
+  if (!t) return t;
+  // Already ends cleanly
+  if (/[.!?]['"]?$/.test(t)) return t;
+  // Find the last sentence-ending punctuation followed by a space or end
+  const lastBoundary = Math.max(
+    t.lastIndexOf(". "),
+    t.lastIndexOf("! "),
+    t.lastIndexOf("? "),
+    t.lastIndexOf(".\n"),
+    t.lastIndexOf("!\n"),
+    t.lastIndexOf("?\n"),
+  );
+  // Only cut if the boundary is past the first 30% of the text
+  // (avoids returning a tiny sliver when the only period is near the start)
+  if (lastBoundary > t.length * 0.3) {
+    return t.slice(0, lastBoundary + 1);
+  }
+  return t;
+}
+
 // ── Icons ──────────────────────────────────────────────────── //
 const IconBrain = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -51,6 +83,14 @@ const IconBrain = () => (
     <path d="M19.938 10.5a4 4 0 0 1 .585.396"/>
     <path d="M6 18a4 4 0 0 1-1.967-.516"/>
     <path d="M19.967 17.484A4 4 0 0 1 18 18"/>
+  </svg>
+);
+
+const IconUpload = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+    <polyline points="17 8 12 3 7 8"/>
+    <line x1="12" y1="3" x2="12" y2="15"/>
   </svg>
 );
 
@@ -158,8 +198,49 @@ function Dashboard({ session }: { session: any }) {
   const [loading, setLoading]           = useState(false);
   const [feedLoading, setFeedLoading]   = useState(true);
   const [mode, setMode]                 = useState<"feed" | "search">("feed");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const pollRef  = useRef<NodeJS.Timeout | null>(null);
+  const [pdfUploading, setPdfUploading] = useState(false);
+  const [pdfStatus, setPdfStatus]       = useState<string | null>(null);
+  const inputRef    = useRef<HTMLInputElement>(null);
+  const pollRef     = useRef<NodeJS.Timeout | null>(null);
+  const pdfInputRef = useRef<HTMLInputElement>(null);
+
+  const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!pdfInputRef.current) return;
+    pdfInputRef.current.value = "";           // reset so same file can be re-uploaded
+    if (!file) return;
+
+    setPdfUploading(true);
+    setPdfStatus(null);
+
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) { setPdfUploading(false); return; }
+
+    const form = new FormData();
+    form.append("file", file);
+
+    try {
+      const res  = await fetch(`${BACKEND}/upload/pdf`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        body: form,
+      });
+      const data = await res.json();
+      if (data.status === "stored") {
+        setPdfStatus(`✓ "${file.name}" saved (${data.chunks_created} chunks)`);
+        loadFeed();
+      } else if (data.status === "duplicate") {
+        setPdfStatus("Already in your library.");
+      } else {
+        setPdfStatus(data.detail || "Upload failed.");
+      }
+    } catch {
+      setPdfStatus("Upload failed. Please try again.");
+    } finally {
+      setPdfUploading(false);
+      setTimeout(() => setPdfStatus(null), 4000);
+    }
+  };
 
   const loadFeed = useCallback(async () => {
     try {
@@ -224,6 +305,29 @@ function Dashboard({ session }: { session: any }) {
         </nav>
 
         <div className="sidebar-footer">
+          {/* Hidden file input — triggered by the Upload PDF button below */}
+          <input
+            ref={pdfInputRef}
+            type="file"
+            accept=".pdf"
+            style={{ display: "none" }}
+            onChange={handlePdfUpload}
+          />
+          <button
+            className="sidebar-item"
+            style={{ width: "100%", border: "none", background: pdfUploading ? "var(--accent-dim)" : undefined }}
+            onClick={() => pdfInputRef.current?.click()}
+            disabled={pdfUploading}
+          >
+            {pdfUploading
+              ? <><div className="spinner spinner-sm" style={{ flexShrink: 0 }} /><span>Uploading...</span></>
+              : <><IconUpload /><span>Upload PDF</span></>}
+          </button>
+          {pdfStatus && (
+            <div style={{ fontSize: "11.5px", color: pdfStatus.startsWith("✓") ? "var(--green)" : "var(--text-2)", padding: "4px 10px", lineHeight: 1.4 }}>
+              {pdfStatus}
+            </div>
+          )}
           <div className="sidebar-user-email">{session?.user?.email}</div>
           <button className="sidebar-signout" onClick={() => supabase.auth.signOut()}>Sign out</button>
         </div>
@@ -297,7 +401,7 @@ function Dashboard({ session }: { session: any }) {
                     {results.map((r, i) => (
                       <Link key={i} href={`/document/${r.document_id}`}>
                         <div className="card card-link source-card">
-                          <p style={{ fontSize: "13.5px", color: "var(--text-1)", lineHeight: 1.7, margin: "0 0 10px" }}>{r.chunk}</p>
+                          <p style={{ fontSize: "13.5px", color: "var(--text-1)", lineHeight: 1.7, margin: "0 0 10px" }}>{cleanChunk(r.chunk)}</p>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                             <span style={{ fontSize: "11px", color: "var(--text-3)" }}>Doc #{r.document_id}</span>
                             <span style={{ fontSize: "11px", color: "var(--accent)", fontWeight: 500 }}>{(r.score * 100).toFixed(0)}% match</span>
