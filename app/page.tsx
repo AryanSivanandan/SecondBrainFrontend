@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
@@ -98,6 +99,14 @@ const IconHome = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
     <polyline points="9 22 9 12 15 12 15 22"/>
+  </svg>
+);
+
+const IconGraph = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+    <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+    <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
   </svg>
 );
 
@@ -270,17 +279,25 @@ function Dashboard({ session }: { session: any }) {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [mode]);
 
-  const handleSearch = async () => {
-    if (!query.trim()) return;
+  const handleSearch = async (queryOverride?: string) => {
+    const q = queryOverride ?? query;
+    if (!q.trim()) return;
     setLoading(true); setMode("search"); setAnswer(""); setResults([]);
     try {
-      const res  = await authFetch(`${BACKEND}/answer`, { method: "POST", body: JSON.stringify({ query }) });
+      const res  = await authFetch(`${BACKEND}/answer`, { method: "POST", body: JSON.stringify({ query: q }) });
       const data = await res.json();
       setAnswer(data.answer || "");
       setResults(data.sources || []);
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
   };
+
+  // Handle ?q= param from Topics "Explore →" links
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get("q");
+    if (q) { setQuery(q); handleSearch(q); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const clearSearch = () => {
     setQuery(""); setMode("feed"); setAnswer(""); setResults([]);
@@ -302,6 +319,9 @@ function Dashboard({ session }: { session: any }) {
           <div className={`sidebar-item ${mode === "feed" ? "active" : ""}`} onClick={clearSearch}>
             <IconHome /><span>Home</span>
           </div>
+          <Link href="/topics" className="sidebar-item">
+            <IconGraph /><span>Topics</span>
+          </Link>
         </nav>
 
         <div className="sidebar-footer">
@@ -361,7 +381,7 @@ function Dashboard({ session }: { session: any }) {
               {mode === "search" && (
                 <button onClick={clearSearch} style={{ background: "none", border: "none", color: "var(--text-3)", fontSize: "22px", lineHeight: 1, padding: "2px 6px", cursor: "pointer" }}>×</button>
               )}
-              <button className="btn btn-primary" onClick={handleSearch} disabled={loading} style={{ padding: "7px 16px" }}>
+              <button className="btn btn-primary" onClick={() => handleSearch()} disabled={loading} style={{ padding: "7px 16px" }}>
                 {loading
                   ? <><div className="spinner spinner-sm spinner-white" />Asking</>
                   : "Ask"}

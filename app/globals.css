@@ -302,6 +302,12 @@ button { cursor: pointer; }
 /* ── Section spacing ─────────────────────────────────────────── */
 .section { margin-bottom: 32px; }
 
+/* ── Side panel slide-in ─────────────────────────────────────── */
+@keyframes slideIn {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
 /* ── Responsive ──────────────────────────────────────────────── */
 @media (max-width: 768px) {
   .sidebar { display: none; }
