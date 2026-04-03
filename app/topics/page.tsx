@@ -6,10 +6,14 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 
-// react-force-graph-2d uses browser APIs — must be dynamically imported
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false });
 
 const BACKEND = "/api";
+
+const TOPIC_COLORS = [
+  "#6366f1", "#8b5cf6", "#06b6d4", "#10b981",
+  "#f59e0b", "#ef4444", "#ec4899", "#84cc16",
+];
 
 // ── Types ──────────────────────────────────────────────────── //
 type TopicNode = {
@@ -17,19 +21,31 @@ type TopicNode = {
   name: string;
   description: string;
   chunk_count: number;
-  size: number;
-  // Injected by D3 force simulation
+  color: string;
+  nodeType: "topic";
   x?: number;
   y?: number;
 };
 
+type DocNode = {
+  id: string;          // "doc-{id}"
+  docId: number;
+  name: string;
+  nodeType: "document";
+  parentTopic: number;
+  x?: number;
+  y?: number;
+};
+
+type GraphNode = TopicNode | DocNode;
+
 type GraphLink = {
-  source: number | TopicNode;
-  target: number | TopicNode;
+  source: number | string | GraphNode;
+  target: number | string | GraphNode;
   similarity: number;
 };
 
-type GraphData = { nodes: TopicNode[]; links: GraphLink[] };
+type GraphData = { nodes: GraphNode[]; links: GraphLink[] };
 
 type TopicDoc = {
   id: number;
@@ -37,6 +53,7 @@ type TopicDoc = {
   url: string;
   excerpt: string;
   captured_at: string;
+  topic_id: number;
 };
 
 type Gap = {
@@ -71,6 +88,10 @@ function timeAgo(dateStr: string) {
 
 function hostname(url: string) {
   try { return new URL(url).hostname.replace("www.", ""); } catch { return ""; }
+}
+
+function nodeId(n: GraphNode | number | string): number | string {
+  return typeof n === "object" ? n.id : n;
 }
 
 // ── Icons ──────────────────────────────────────────────────── //
@@ -113,26 +134,28 @@ const IconRefresh = () => (
 // ── Page ───────────────────────────────────────────────────── //
 export default function TopicsPage() {
   const router = useRouter();
+  const fgRef  = useRef<any>(null);
 
-  const [graphData, setGraphData]       = useState<GraphData>({ nodes: [], links: [] });
-  const [gaps, setGaps]                 = useState<Gap[]>([]);
-  const [selectedTopic, setSelectedTopic] = useState<TopicNode | null>(null);
-  const [topicDocs, setTopicDocs]       = useState<TopicDoc[]>([]);
-  const [docsLoading, setDocsLoading]   = useState(false);
-  const [hoveredNode, setHoveredNode]   = useState<TopicNode | null>(null);
-  const [highlightNodes, setHighlightNodes] = useState<Set<number>>(new Set());
-  const [loadingGraph, setLoadingGraph] = useState(true);
-  const [rebuilding, setRebuilding]     = useState(false);
-  const [rebuildMsg, setRebuildMsg]     = useState("");
-  const [dimensions, setDimensions]     = useState({ width: 800, height: 600 });
+  const [graphData, setGraphData]           = useState<GraphData>({ nodes: [], links: [] });
+  const [topicDocsMap, setTopicDocsMap]     = useState<Record<number, TopicDoc[]>>({});
+  const [gaps, setGaps]                     = useState<Gap[]>([]);
+  const [selectedTopic, setSelectedTopic]   = useState<TopicNode | null>(null);
+  const [hoveredNode, setHoveredNode]       = useState<GraphNode | null>(null);
+  const [highlightNodes, setHighlightNodes] = useState<Set<number | string>>(new Set());
+  const [loadingGraph, setLoadingGraph]     = useState(true);
+  const [rebuilding, setRebuilding]         = useState(false);
+  const [rebuildMsg, setRebuildMsg]         = useState("");
+  const [autoRebuildMsg, setAutoRebuildMsg] = useState("");
+  const [notEnoughData, setNotEnoughData]   = useState(false);
+  const [dimensions, setDimensions]         = useState({ width: 800, height: 600 });
 
-  // Refs for stable callbacks
-  const hoveredNodeRef    = useRef<TopicNode | null>(null);
-  const highlightNodesRef = useRef<Set<number>>(new Set());
+  // Stable refs so canvas callbacks don't capture stale closure values
+  const hoveredNodeRef    = useRef<GraphNode | null>(null);
+  const highlightNodesRef = useRef<Set<number | string>>(new Set());
   hoveredNodeRef.current    = hoveredNode;
   highlightNodesRef.current = highlightNodes;
 
-  // Track canvas dimensions
+  // Canvas dimensions
   useEffect(() => {
     const update = () =>
       setDimensions({
@@ -144,33 +167,151 @@ export default function TopicsPage() {
     return () => window.removeEventListener("resize", update);
   }, []);
 
-  // Auth check + initial data
+  // Auth + initial load
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session) { router.push("/"); return; }
-      fetchTopics();
+      loadWithAutoRebuild();
       fetchGaps();
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Customise D3 forces whenever graphData changes and the component is mounted
+  useEffect(() => {
+    if (!fgRef.current || graphData.nodes.length === 0) return;
+
+    const charge = fgRef.current.d3Force("charge");
+    if (charge) {
+      charge.strength((node: GraphNode) =>
+        node.nodeType === "topic" ? -200 : -30
+      );
+    }
+
+    const link = fgRef.current.d3Force("link");
+    if (link) {
+      link.distance((l: any) => {
+        const tgt = nodeId(l.target);
+        return typeof tgt === "string" && tgt.startsWith("doc-") ? 35 : 80;
+      });
+    }
+
+    fgRef.current.d3ReheatSimulation();
+  }, [graphData]);
+
+  // ── Data fetching ─────────────────────────────────────────── //
+
+  // Shared graph-building logic — accepts already-fetched topic data.
+  // Fetches doc satellites, saves docCount to localStorage, updates state.
+  async function buildGraph(topicData: { nodes: any[]; edges: any[] }) {
+    const topicNodes: TopicNode[] = (topicData.nodes ?? []).map((n: any) => ({
+      ...n,
+      nodeType: "topic",
+      color: TOPIC_COLORS[n.id % TOPIC_COLORS.length],
+    }));
+
+    const topicEdges: GraphLink[] = (topicData.edges ?? []).map((e: any) => ({
+      source: e.source,
+      target: e.target,
+      similarity: e.similarity,
+    }));
+
+    const docResults: TopicDoc[][] = await Promise.all(
+      topicNodes.map(t =>
+        authFetch(`${BACKEND}/topics/${t.id}/chunks`)
+          .then(r => r.json())
+          .catch(() => [])
+      )
+    );
+
+    const newDocsMap: Record<number, TopicDoc[]> = {};
+    const docNodes:  DocNode[]   = [];
+    const docLinks:  GraphLink[] = [];
+
+    topicNodes.forEach((topic, i) => {
+      const docs: TopicDoc[] = Array.isArray(docResults[i]) ? docResults[i] : [];
+      newDocsMap[topic.id] = docs;
+      docs.forEach(doc => {
+        docNodes.push({
+          id: `doc-${doc.id}`,
+          docId: doc.id,
+          name: (doc.title ?? "Untitled").slice(0, 30),
+          nodeType: "document",
+          parentTopic: topic.id,
+        });
+        docLinks.push({ source: topic.id, target: `doc-${doc.id}`, similarity: 0.3 });
+      });
+    });
+
+    // Persist the doc count so future page loads can detect new captures
+    localStorage.setItem("sb_topics_rebuild_doc_count", String(docNodes.length));
+
+    setTopicDocsMap(newDocsMap);
+    setGraphData({
+      nodes: [...topicNodes, ...docNodes],
+      links: [...topicEdges, ...docLinks],
+    });
+  }
+
+  // Used by manual Rebuild button — fetches fresh data then builds the graph.
   async function fetchTopics() {
     setLoadingGraph(true);
     try {
       const res  = await authFetch(`${BACKEND}/topics`);
       const data = await res.json();
-      setGraphData({
-        nodes: data.nodes ?? [],
-        links: (data.edges ?? []).map((e: { source: number; target: number; similarity: number }) => ({
-          source: e.source,
-          target: e.target,
-          similarity: e.similarity,
-        })),
-      });
+      await buildGraph(data);
     } catch (e) {
       console.error(e);
     } finally {
       setLoadingGraph(false);
+    }
+  }
+
+  // Initial page load — auto-rebuilds if no topics exist or new captures detected.
+  async function loadWithAutoRebuild() {
+    setLoadingGraph(true);
+    setNotEnoughData(false);
+    try {
+      // Fetch topics and current capture count in parallel
+      const [topicsRes, docsRes] = await Promise.all([
+        authFetch(`${BACKEND}/topics`),
+        authFetch(`${BACKEND}/documents?limit=500`),
+      ]);
+      const topicsData     = await topicsRes.json();
+      const docsData       = await docsRes.json();
+      const currentCount   = Array.isArray(docsData) ? docsData.length : 0;
+      const storedCount    = parseInt(localStorage.getItem("sb_topics_rebuild_doc_count") ?? "0", 10);
+
+      const noTopics    = !topicsData.nodes || topicsData.nodes.length === 0;
+      const newCaptures = !noTopics && currentCount > storedCount + 4;
+
+      if (noTopics || newCaptures) {
+        const msg = noTopics
+          ? "Building your knowledge graph for the first time..."
+          : `${currentCount - storedCount} new captures detected — updating your graph...`;
+        setAutoRebuildMsg(msg);
+        setRebuilding(true);
+
+        const rebuildRes  = await authFetch(`${BACKEND}/topics/rebuild`, { method: "POST" });
+        const rebuildData = await rebuildRes.json();
+
+        if (rebuildData.status === "not_enough_data") {
+          setNotEnoughData(true);
+          return;
+        }
+
+        const freshRes  = await authFetch(`${BACKEND}/topics`);
+        const freshData = await freshRes.json();
+        await buildGraph(freshData);
+        setAutoRebuildMsg("");
+      } else {
+        await buildGraph(topicsData);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoadingGraph(false);
+      setRebuilding(false);
     }
   }
 
@@ -205,93 +346,89 @@ export default function TopicsPage() {
     }
   }
 
-  async function handleNodeClick(node: TopicNode) {
-    setSelectedTopic(node);
-    setTopicDocs([]);
-    setDocsLoading(true);
-    try {
-      const res  = await authFetch(`${BACKEND}/topics/${node.id}/chunks`);
-      const data = await res.json();
-      setTopicDocs(Array.isArray(data) ? data : []);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setDocsLoading(false);
+  // ── Graph interaction ─────────────────────────────────────── //
+  function handleNodeClick(node: GraphNode) {
+    if (node.nodeType === "document") {
+      router.push(`/document/${(node as DocNode).docId}`);
+      return;
     }
+    const topic = node as TopicNode;
+    setSelectedTopic(topic);
   }
 
-  const handleNodeHover = useCallback((node: TopicNode | null) => {
+  const handleNodeHover = useCallback((node: GraphNode | null) => {
     setHoveredNode(node ?? null);
-    const hl = new Set<number>();
+    const hl = new Set<number | string>();
     if (node) {
       hl.add(node.id);
-      // After D3 runs, link.source / link.target may be objects
+      // Walk links — after D3 runs, source/target may be node objects
       setGraphData(prev => {
         prev.links.forEach(link => {
-          const s = typeof link.source === "object" ? (link.source as TopicNode).id : link.source;
-          const t = typeof link.target === "object" ? (link.target as TopicNode).id : link.target;
+          const s = nodeId(link.source);
+          const t = nodeId(link.target);
           if (s === node.id) hl.add(t);
           if (t === node.id) hl.add(s);
         });
-        return prev; // no re-render needed, just reading
+        return prev;
       });
     }
     setHighlightNodes(hl);
   }, []);
 
-  // Node canvas renderer
+  // ── Canvas renderers ──────────────────────────────────────── //
   const paintNode = useCallback((
-    node: TopicNode,
+    node: GraphNode,
     ctx: CanvasRenderingContext2D,
     globalScale: number,
   ) => {
-    const r  = Math.max(4, (node.size ?? 12) / 4);
-    const nx = node.x ?? 0;
-    const ny = node.y ?? 0;
-    const hovered    = hoveredNodeRef.current;
-    const highlighted = highlightNodesRef.current;
+    const nx       = node.x ?? 0;
+    const ny       = node.y ?? 0;
+    const hovered   = hoveredNodeRef.current;
+    const highlight = highlightNodesRef.current;
     const isHovered    = hovered?.id === node.id;
-    const isConnected  = highlighted.has(node.id);
+    const isConnected  = highlight.has(node.id);
     const dimmed       = hovered !== null && !isConnected && !isHovered;
-    const alpha        = dimmed ? 0.12 : Math.min(0.45 + (node.chunk_count ?? 1) * 0.04, 0.95);
 
-    // Glow ring for hovered / connected nodes
-    if (isHovered || isConnected) {
+    if (node.nodeType === "topic") {
+      const t = node as TopicNode;
+      const r = Math.sqrt(t.chunk_count ?? 1) * 3 + 4;
+
+      // Glow
+      ctx.shadowBlur  = isHovered ? 22 : 12;
+      ctx.shadowColor = t.color;
+
       ctx.beginPath();
-      ctx.arc(nx, ny, r + 5, 0, 2 * Math.PI);
-      ctx.fillStyle = "rgba(124,106,247,0.1)";
+      ctx.arc(nx, ny, r, 0, 2 * Math.PI);
+      ctx.fillStyle = dimmed ? t.color + "44" : t.color;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      // Label (only when zoomed enough)
+      if (globalScale > 0.5) {
+        const fontSize = Math.max(10, 12 / globalScale);
+        ctx.font         = `${fontSize}px -apple-system, sans-serif`;
+        ctx.textAlign    = "center";
+        ctx.textBaseline = "top";
+        ctx.fillStyle    = dimmed ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.9)";
+        ctx.fillText(t.name, nx, ny + r + 4 / globalScale);
+      }
+    } else {
+      // Document satellite — small white dot
+      ctx.beginPath();
+      ctx.arc(nx, ny, 2.5, 0, 2 * Math.PI);
+      ctx.fillStyle = dimmed ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.6)";
       ctx.fill();
     }
-
-    // Node fill
-    ctx.beginPath();
-    ctx.arc(nx, ny, r, 0, 2 * Math.PI);
-    ctx.fillStyle = `rgba(124,106,247,${alpha})`;
-    ctx.fill();
-
-    // Border on hover
-    if (isHovered) {
-      ctx.strokeStyle = "rgba(124,106,247,0.9)";
-      ctx.lineWidth   = 1.5 / globalScale;
-      ctx.stroke();
-    }
-
-    // Label below node
-    const fontSize = Math.max(9, 12 / globalScale);
-    ctx.font         = `${fontSize}px -apple-system, sans-serif`;
-    ctx.textAlign    = "center";
-    ctx.textBaseline = "top";
-    ctx.fillStyle    = dimmed ? "rgba(238,238,248,0.15)" : "rgba(238,238,248,0.88)";
-    ctx.fillText(node.name, nx, ny + r + 2 / globalScale);
   }, []);
 
-  // Extend pointer hit area to cover label
   const paintNodePointer = useCallback((
-    node: TopicNode,
+    node: GraphNode,
     color: string,
     ctx: CanvasRenderingContext2D,
   ) => {
-    const r = Math.max(4, (node.size ?? 12) / 4) + 6;
+    const r = node.nodeType === "topic"
+      ? Math.sqrt((node as TopicNode).chunk_count ?? 1) * 3 + 10
+      : 8;
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(node.x ?? 0, node.y ?? 0, r, 0, 2 * Math.PI);
@@ -300,17 +437,29 @@ export default function TopicsPage() {
 
   const getLinkColor = useCallback((link: GraphLink) => {
     const hovered = hoveredNodeRef.current;
-    const sim     = (link as GraphLink).similarity ?? 0.5;
+    const sim     = (link as any).similarity ?? 0.5;
+    const isDocLink = sim <= 0.3;
+
     if (hovered) {
-      const s = typeof link.source === "object" ? (link.source as TopicNode).id : link.source;
-      const t = typeof link.target === "object" ? (link.target as TopicNode).id : link.target;
-      if (s !== hovered.id && t !== hovered.id) return "rgba(124,106,247,0.04)";
-      return sim > 0.7 ? "rgba(124,106,247,0.7)" : "rgba(124,106,247,0.4)";
+      const s = nodeId(link.source);
+      const t = nodeId(link.target);
+      if (s !== hovered.id && t !== hovered.id) return "rgba(255,255,255,0.03)";
+      return `rgba(255,255,255,${sim * 0.55})`;
     }
-    return sim > 0.7 ? "rgba(124,106,247,0.5)" : "rgba(124,106,247,0.18)";
+    return isDocLink
+      ? "rgba(255,255,255,0.07)"
+      : `rgba(255,255,255,${sim * 0.3})`;
   }, []);
 
-  const isEmpty = !loadingGraph && graphData.nodes.length === 0;
+  const getLinkWidth = useCallback((link: GraphLink) => {
+    const sim = (link as any).similarity ?? 0.5;
+    return sim <= 0.3 ? 0.4 : sim * 1.5;
+  }, []);
+
+  // ── Derived counts ────────────────────────────────────────── //
+  const topicCount = graphData.nodes.filter(n => n.nodeType === "topic").length;
+  const docCount   = graphData.nodes.filter(n => n.nodeType === "document").length;
+  const isEmpty    = !loadingGraph && topicCount === 0;
 
   return (
     <div className="app-layout">
@@ -341,7 +490,7 @@ export default function TopicsPage() {
         </div>
       </aside>
 
-      {/* ── Main content ────────────────────────────── */}
+      {/* ── Main ────────────────────────────────────── */}
       <main className="main-content" style={{ overflow: "hidden", display: "flex", flexDirection: "column" }}>
 
         {/* Title bar */}
@@ -353,18 +502,16 @@ export default function TopicsPage() {
             <h1 style={{ fontSize: "18px", fontWeight: 600, color: "var(--text-1)", lineHeight: 1 }}>
               Knowledge Graph
             </h1>
-            {!loadingGraph && graphData.nodes.length > 0 && (
+            {!loadingGraph && topicCount > 0 && (
               <p style={{ fontSize: "11.5px", color: "var(--text-3)", marginTop: "4px" }}>
-                {graphData.nodes.length} topics · {graphData.links.length} connections
+                {topicCount} topics · {docCount} documents · {graphData.links.filter(l => (l as any).similarity > 0.3).length} connections
               </p>
             )}
           </div>
+
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             {rebuildMsg && (
-              <span style={{
-                fontSize: "12px",
-                color: rebuildMsg.startsWith("Need") ? "var(--amber)" : "var(--green)",
-              }}>
+              <span style={{ fontSize: "12px", color: rebuildMsg.startsWith("Need") ? "var(--amber)" : "var(--green)" }}>
                 {rebuildMsg}
               </span>
             )}
@@ -381,10 +528,26 @@ export default function TopicsPage() {
           {loadingGraph ? (
             <div style={{
               height: dimensions.height,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              gap: "10px", color: "var(--text-2)", fontSize: "14px",
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+              gap: "14px", color: "var(--text-2)", fontSize: "14px",
             }}>
-              <div className="spinner" /> Loading graph...
+              <div className="spinner" />
+              <span>{autoRebuildMsg || "Loading graph..."}</span>
+              {autoRebuildMsg && (
+                <span style={{ fontSize: "12px", color: "var(--text-3)" }}>
+                  This may take 10–20 seconds
+                </span>
+              )}
+            </div>
+          ) : notEnoughData ? (
+            <div style={{ padding: "28px" }}>
+              <div className="empty-state">
+                <p>Not enough captures yet.<br />
+                  <span style={{ fontSize: "12px", color: "var(--text-3)" }}>
+                    Save at least 10 pages using the extension, then come back.
+                  </span>
+                </p>
+              </div>
             </div>
           ) : isEmpty ? (
             <div style={{ padding: "28px" }}>
@@ -398,22 +561,23 @@ export default function TopicsPage() {
             </div>
           ) : (
             <ForceGraph2D
+              ref={fgRef}
               graphData={graphData}
               width={dimensions.width}
               height={dimensions.height}
-              backgroundColor="#07070e"
-              nodeLabel="name"
+              backgroundColor="#0a0a0f"
+              nodeLabel={(node) => (node as GraphNode).nodeType === "topic" ? "" : (node as GraphNode).name}
               nodeCanvasObject={paintNode as any}
               nodeCanvasObjectMode={() => "replace"}
               nodePointerAreaPaint={paintNodePointer as any}
               onNodeClick={handleNodeClick as any}
               onNodeHover={handleNodeHover as any}
               linkColor={getLinkColor as any}
-              linkWidth={(link) => ((link as GraphLink).similarity ?? 0.5) > 0.7 ? 1.5 : 0.8}
+              linkWidth={getLinkWidth as any}
               linkDirectionalParticles={0}
-              cooldownTicks={120}
               d3AlphaDecay={0.02}
               d3VelocityDecay={0.3}
+              cooldownTime={3000}
             />
           )}
         </div>
@@ -456,9 +620,12 @@ export default function TopicsPage() {
           zIndex: 30,
           animation: "slideIn 0.18s ease forwards",
         }}>
-          {/* Panel header */}
+          {/* Colour accent strip */}
+          <div style={{ height: "3px", background: selectedTopic.color, flexShrink: 0 }} />
+
+          {/* Header */}
           <div style={{
-            padding: "20px 20px 16px",
+            padding: "18px 20px 14px",
             borderBottom: "1px solid var(--border)",
             display: "flex", alignItems: "flex-start", gap: "12px",
           }}>
@@ -471,7 +638,15 @@ export default function TopicsPage() {
                   {selectedTopic.description}
                 </p>
               )}
-              <span className="badge badge-accent" style={{ marginTop: "10px" }}>
+              <span
+                className="badge"
+                style={{
+                  marginTop: "10px",
+                  background: selectedTopic.color + "22",
+                  color: selectedTopic.color,
+                  border: `1px solid ${selectedTopic.color}44`,
+                }}
+              >
                 {selectedTopic.chunk_count} capture{selectedTopic.chunk_count !== 1 ? "s" : ""}
               </span>
             </div>
@@ -490,17 +665,15 @@ export default function TopicsPage() {
 
           {/* Document list */}
           <div style={{ flex: 1, overflowY: "auto", padding: "16px" }}>
-            <div className="section-label" style={{ marginBottom: "10px" }}>Documents</div>
+            <div className="section-label" style={{ marginBottom: "10px" }}>
+              Documents · {(topicDocsMap[selectedTopic.id] ?? []).length}
+            </div>
 
-            {docsLoading ? (
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--text-2)", fontSize: "13px" }}>
-                <div className="spinner spinner-sm" /> Loading...
-              </div>
-            ) : topicDocs.length === 0 ? (
+            {(topicDocsMap[selectedTopic.id] ?? []).length === 0 ? (
               <p style={{ fontSize: "13px", color: "var(--text-3)" }}>No documents found.</p>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                {topicDocs.map(doc => (
+                {(topicDocsMap[selectedTopic.id] ?? []).map(doc => (
                   <Link
                     key={doc.id}
                     href={`/document/${doc.id}`}
