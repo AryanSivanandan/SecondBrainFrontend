@@ -249,6 +249,18 @@ export default function DocumentPage() {
               <ReactMarkdown>{summary}</ReactMarkdown>
             </div>
           )}
+          {!summaryLoading && summary && !chatMode && (
+            <button
+              onClick={() => setChatMode(true)}
+              style={{
+                marginTop: "14px", display: "inline-flex", alignItems: "center", gap: "6px",
+                background: "none", border: "none", padding: "0", cursor: "pointer",
+                color: "var(--accent)", fontSize: "13px", fontWeight: 500,
+              }}
+            >
+              <IconChat />Continue in chat →
+            </button>
+          )}
         </div>
 
         {/* Chat panel */}
