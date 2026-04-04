@@ -51,7 +51,7 @@ interface GraphLink extends d3.SimulationLinkDatum<GraphNode> {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const API = process.env.NEXT_PUBLIC_API_URL || 'https://your-api.railway.app'
+const API = process.env.NEXT_PUBLIC_BACKEND_URL || 'https://your-api.railway.app'
 
 const COLORS = {
   bg: '#0a0a0f',
