@@ -1,713 +1,846 @@
-"use client";
+'use client'
 
-import { useEffect, useState, useCallback, useRef } from "react";
-import { useRouter } from "next/navigation";
-import dynamic from "next/dynamic";
-import Link from "next/link";
-import { supabase } from "@/lib/supabase";
+import { useEffect, useRef, useState, useCallback } from 'react'
+import * as d3 from 'd3'
+import { supabase } from '@/lib/supabase'
 
-const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false });
+// ─── Types ──────────────────────────────────────────────────────────────────
 
-const BACKEND = "/api";
-
-const TOPIC_COLORS = [
-  "#6366f1", "#8b5cf6", "#06b6d4", "#10b981",
-  "#f59e0b", "#ef4444", "#ec4899", "#84cc16",
-];
-
-// ── Types ──────────────────────────────────────────────────── //
-type TopicNode = {
-  id: number;
-  name: string;
-  description: string;
-  chunk_count: number;
-  color: string;
-  nodeType: "topic";
-  x?: number;
-  y?: number;
-};
-
-type DocNode = {
-  id: string;          // "doc-{id}"
-  docId: number;
-  name: string;
-  nodeType: "document";
-  parentTopic: number;
-  x?: number;
-  y?: number;
-};
-
-type GraphNode = TopicNode | DocNode;
-
-type GraphLink = {
-  source: number | string | GraphNode;
-  target: number | string | GraphNode;
-  similarity: number;
-};
-
-type GraphData = { nodes: GraphNode[]; links: GraphLink[] };
-
-type TopicDoc = {
-  id: number;
-  title: string;
-  url: string;
-  excerpt: string;
-  captured_at: string;
-  topic_id: number;
-};
-
-type Gap = {
-  topic_a: string;
-  topic_b: string;
-  similarity: number;
-  suggestion: string;
-};
-
-// ── Helpers ────────────────────────────────────────────────── //
-async function authFetch(url: string, options: RequestInit = {}) {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) throw new Error("Not authenticated");
-  return fetch(url, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${session.access_token}`,
-      ...options.headers,
-    },
-  });
+interface Concept {
+  id: number
+  name: string
+  description: string
+  document_count: number
+  chunk_count?: number
 }
 
-function timeAgo(dateStr: string) {
-  const d    = new Date(dateStr.endsWith("Z") ? dateStr : dateStr + "Z");
-  const diff = Date.now() - d.getTime();
-  const days = Math.floor(diff / 86400000);
-  if (days < 1)  return "today";
-  if (days < 30) return `${days}d ago`;
-  return d.toLocaleDateString("en", { month: "short", day: "numeric" });
+interface ConceptEdge {
+  source: number
+  target: number
+  type: string
+  weight: number
 }
 
-function hostname(url: string) {
-  try { return new URL(url).hostname.replace("www.", ""); } catch { return ""; }
+interface Chunk {
+  id: number
+  chunk: string
+  document_id: number
+  score?: number
 }
 
-function nodeId(n: GraphNode | number | string): number | string {
-  return typeof n === "object" ? n.id : n;
+interface Document {
+  id: number
+  title: string
+  url: string
+  excerpt: string
+  captured_at: string
 }
 
-// ── Icons ──────────────────────────────────────────────────── //
-const IconBrain = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/>
-    <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>
-    <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/>
-    <path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/>
-    <path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/>
-    <path d="M3.477 10.896a4 4 0 0 1 .585-.396"/>
-    <path d="M19.938 10.5a4 4 0 0 1 .585.396"/>
-    <path d="M6 18a4 4 0 0 1-1.967-.516"/>
-    <path d="M19.967 17.484A4 4 0 0 1 18 18"/>
-  </svg>
-);
+interface GraphNode extends d3.SimulationNodeDatum {
+  id: number
+  name: string
+  description: string
+  document_count: number
+  chunk_count: number
+  radius: number
+}
 
-const IconHome = () => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
-    <polyline points="9 22 9 12 15 12 15 22"/>
-  </svg>
-);
+interface GraphLink extends d3.SimulationLinkDatum<GraphNode> {
+  similarity: number
+}
 
-const IconGraph = () => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
-    <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
-    <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
-  </svg>
-);
+// ─── Constants ───────────────────────────────────────────────────────────────
 
-const IconRefresh = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="23 4 23 10 17 10"/>
-    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-  </svg>
-);
+const API = process.env.NEXT_PUBLIC_API_URL || 'https://your-api.railway.app'
 
-// ── Page ───────────────────────────────────────────────────── //
-export default function TopicsPage() {
-  const router = useRouter();
-  const fgRef  = useRef<any>(null);
+const COLORS = {
+  bg: '#0a0a0f',
+  surface: '#111118',
+  surfaceHover: '#1a1a26',
+  border: '#1e1e2e',
+  borderBright: '#2e2e4e',
+  accent: '#7c6af7',
+  accentDim: '#4a3fa0',
+  accentGlow: 'rgba(124, 106, 247, 0.15)',
+  accentGlow2: 'rgba(124, 106, 247, 0.35)',
+  text: '#e8e8f0',
+  textMuted: '#6b6b8a',
+  textDim: '#3d3d5a',
+  nodeMin: '#2d2d4a',
+  nodeMax: '#7c6af7',
+  link: '#2a2a3e',
+  linkBright: '#4a4a7a',
+  success: '#34d399',
+  danger: '#f87171',
+}
 
-  const [graphData, setGraphData]           = useState<GraphData>({ nodes: [], links: [] });
-  const [topicDocsMap, setTopicDocsMap]     = useState<Record<number, TopicDoc[]>>({});
-  const [gaps, setGaps]                     = useState<Gap[]>([]);
-  const [selectedTopic, setSelectedTopic]   = useState<TopicNode | null>(null);
-  const [hoveredNode, setHoveredNode]       = useState<GraphNode | null>(null);
-  const [highlightNodes, setHighlightNodes] = useState<Set<number | string>>(new Set());
-  const [loadingGraph, setLoadingGraph]     = useState(true);
-  const [rebuilding, setRebuilding]         = useState(false);
-  const [rebuildMsg, setRebuildMsg]         = useState("");
-  const [autoRebuildMsg, setAutoRebuildMsg] = useState("");
-  const [notEnoughData, setNotEnoughData]   = useState(false);
-  const [dimensions, setDimensions]         = useState({ width: 800, height: 600 });
+// ─── API helpers ─────────────────────────────────────────────────────────────
 
-  // Stable refs so canvas callbacks don't capture stale closure values
-  const hoveredNodeRef    = useRef<GraphNode | null>(null);
-  const highlightNodesRef = useRef<Set<number | string>>(new Set());
-  hoveredNodeRef.current    = hoveredNode;
-  highlightNodesRef.current = highlightNodes;
+async function getToken(): Promise<string> {
+  const { data: { session } } = await supabase.auth.getSession()
+  return session?.access_token ?? ''
+}
 
-  // Canvas dimensions
-  useEffect(() => {
-    const update = () =>
-      setDimensions({
-        width:  Math.max(400, window.innerWidth - 228),
-        height: Math.max(400, window.innerHeight - 120),
-      });
-    update();
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, []);
+async function apiFetch(path: string) {
+  const token = await getToken()
+  const res = await fetch(`${API}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(`API ${path} → ${res.status}`)
+  return res.json()
+}
 
-  // Auth + initial load
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) { router.push("/"); return; }
-      loadWithAutoRebuild();
-      fetchGaps();
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+// ─── Sub-components ──────────────────────────────────────────────────────────
 
-  // Customise D3 forces whenever graphData changes and the component is mounted
-  useEffect(() => {
-    if (!fgRef.current || graphData.nodes.length === 0) return;
+function Spinner() {
+  return (
+    <div style={{
+      width: 18, height: 18,
+      border: `2px solid ${COLORS.accentDim}`,
+      borderTopColor: COLORS.accent,
+      borderRadius: '50%',
+      animation: 'spin 0.7s linear infinite',
+      flexShrink: 0,
+    }} />
+  )
+}
 
-    const charge = fgRef.current.d3Force("charge");
-    if (charge) {
-      charge.strength((node: GraphNode) =>
-        node.nodeType === "topic" ? -200 : -30
-      );
-    }
-
-    const link = fgRef.current.d3Force("link");
-    if (link) {
-      link.distance((l: any) => {
-        const tgt = nodeId(l.target);
-        return typeof tgt === "string" && tgt.startsWith("doc-") ? 35 : 80;
-      });
-    }
-
-    fgRef.current.d3ReheatSimulation();
-  }, [graphData]);
-
-  // ── Data fetching ─────────────────────────────────────────── //
-
-  // Shared graph-building logic — accepts already-fetched topic data.
-  // Fetches doc satellites, saves docCount to localStorage, updates state.
-  async function buildGraph(topicData: { nodes: any[]; edges: any[] }) {
-    const topicNodes: TopicNode[] = (topicData.nodes ?? []).map((n: any) => ({
-      ...n,
-      nodeType: "topic",
-      color: TOPIC_COLORS[n.id % TOPIC_COLORS.length],
-    }));
-
-    const topicEdges: GraphLink[] = (topicData.edges ?? []).map((e: any) => ({
-      source: e.source,
-      target: e.target,
-      similarity: e.similarity,
-    }));
-
-    const docResults: TopicDoc[][] = await Promise.all(
-      topicNodes.map(t =>
-        authFetch(`${BACKEND}/topics/${t.id}/chunks`)
-          .then(r => r.json())
-          .catch(() => [])
-      )
-    );
-
-    const newDocsMap: Record<number, TopicDoc[]> = {};
-    const docNodes:  DocNode[]   = [];
-    const docLinks:  GraphLink[] = [];
-
-    topicNodes.forEach((topic, i) => {
-      const docs: TopicDoc[] = Array.isArray(docResults[i]) ? docResults[i] : [];
-      newDocsMap[topic.id] = docs;
-      docs.forEach(doc => {
-        docNodes.push({
-          id: `doc-${doc.id}`,
-          docId: doc.id,
-          name: (doc.title ?? "Untitled").slice(0, 30),
-          nodeType: "document",
-          parentTopic: topic.id,
-        });
-        docLinks.push({ source: topic.id, target: `doc-${doc.id}`, similarity: 0.3 });
-      });
-    });
-
-    // Persist the doc count so future page loads can detect new captures
-    localStorage.setItem("sb_topics_rebuild_doc_count", String(docNodes.length));
-
-    setTopicDocsMap(newDocsMap);
-    setGraphData({
-      nodes: [...topicNodes, ...docNodes],
-      links: [...topicEdges, ...docLinks],
-    });
-  }
-
-  // Used by manual Rebuild button — fetches fresh data then builds the graph.
-  async function fetchTopics() {
-    setLoadingGraph(true);
-    try {
-      const res  = await authFetch(`${BACKEND}/topics`);
-      const data = await res.json();
-      await buildGraph(data);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoadingGraph(false);
-    }
-  }
-
-  // Initial page load — auto-rebuilds if no topics exist or new captures detected.
-  async function loadWithAutoRebuild() {
-    setLoadingGraph(true);
-    setNotEnoughData(false);
-    try {
-      // Fetch topics and current capture count in parallel
-      const [topicsRes, docsRes] = await Promise.all([
-        authFetch(`${BACKEND}/topics`),
-        authFetch(`${BACKEND}/documents?limit=500`),
-      ]);
-      const topicsData     = await topicsRes.json();
-      const docsData       = await docsRes.json();
-      const currentCount   = Array.isArray(docsData) ? docsData.length : 0;
-      const storedCount    = parseInt(localStorage.getItem("sb_topics_rebuild_doc_count") ?? "0", 10);
-
-      const noTopics    = !topicsData.nodes || topicsData.nodes.length === 0;
-      const newCaptures = !noTopics && currentCount > storedCount + 4;
-
-      if (noTopics || newCaptures) {
-        const msg = noTopics
-          ? "Building your knowledge graph for the first time..."
-          : `${currentCount - storedCount} new captures detected — updating your graph...`;
-        setAutoRebuildMsg(msg);
-        setRebuilding(true);
-
-        const rebuildRes  = await authFetch(`${BACKEND}/topics/rebuild`, { method: "POST" });
-        const rebuildData = await rebuildRes.json();
-
-        if (rebuildData.status === "not_enough_data") {
-          setNotEnoughData(true);
-          return;
-        }
-
-        const freshRes  = await authFetch(`${BACKEND}/topics`);
-        const freshData = await freshRes.json();
-        await buildGraph(freshData);
-        setAutoRebuildMsg("");
-      } else {
-        await buildGraph(topicsData);
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoadingGraph(false);
-      setRebuilding(false);
-    }
-  }
-
-  async function fetchGaps() {
-    try {
-      const res  = await authFetch(`${BACKEND}/topics/gaps`);
-      const data = await res.json();
-      setGaps(Array.isArray(data) ? data : []);
-    } catch (e) {
-      console.error(e);
-    }
-  }
-
-  async function handleRebuild() {
-    setRebuilding(true);
-    setRebuildMsg("");
-    try {
-      const res  = await authFetch(`${BACKEND}/topics/rebuild`, { method: "POST" });
-      const data = await res.json();
-      if (data.status === "not_enough_data") {
-        setRebuildMsg("Need at least 10 captures to build topics.");
-      } else {
-        setRebuildMsg(`Rebuilt — ${data.topics_created} topics created.`);
-        await Promise.all([fetchTopics(), fetchGaps()]);
-      }
-    } catch (e) {
-      console.error(e);
-      setRebuildMsg("Rebuild failed. Try again.");
-    } finally {
-      setRebuilding(false);
-      setTimeout(() => setRebuildMsg(""), 6000);
-    }
-  }
-
-  // ── Graph interaction ─────────────────────────────────────── //
-  function handleNodeClick(node: GraphNode) {
-    if (node.nodeType === "document") {
-      router.push(`/document/${(node as DocNode).docId}`);
-      return;
-    }
-    const topic = node as TopicNode;
-    setSelectedTopic(topic);
-  }
-
-  const handleNodeHover = useCallback((node: GraphNode | null) => {
-    setHoveredNode(node ?? null);
-    const hl = new Set<number | string>();
-    if (node) {
-      hl.add(node.id);
-      // Walk links — after D3 runs, source/target may be node objects
-      setGraphData(prev => {
-        prev.links.forEach(link => {
-          const s = nodeId(link.source);
-          const t = nodeId(link.target);
-          if (s === node.id) hl.add(t);
-          if (t === node.id) hl.add(s);
-        });
-        return prev;
-      });
-    }
-    setHighlightNodes(hl);
-  }, []);
-
-  // ── Canvas renderers ──────────────────────────────────────── //
-  const paintNode = useCallback((
-    node: GraphNode,
-    ctx: CanvasRenderingContext2D,
-    globalScale: number,
-  ) => {
-    const nx       = node.x ?? 0;
-    const ny       = node.y ?? 0;
-    const hovered   = hoveredNodeRef.current;
-    const highlight = highlightNodesRef.current;
-    const isHovered    = hovered?.id === node.id;
-    const isConnected  = highlight.has(node.id);
-    const dimmed       = hovered !== null && !isConnected && !isHovered;
-
-    if (node.nodeType === "topic") {
-      const t = node as TopicNode;
-      const r = Math.sqrt(t.chunk_count ?? 1) * 3 + 4;
-
-      // Glow
-      ctx.shadowBlur  = isHovered ? 22 : 12;
-      ctx.shadowColor = t.color;
-
-      ctx.beginPath();
-      ctx.arc(nx, ny, r, 0, 2 * Math.PI);
-      ctx.fillStyle = dimmed ? t.color + "44" : t.color;
-      ctx.fill();
-      ctx.shadowBlur = 0;
-
-      // Label (only when zoomed enough)
-      if (globalScale > 0.5) {
-        const fontSize = Math.max(10, 12 / globalScale);
-        ctx.font         = `${fontSize}px -apple-system, sans-serif`;
-        ctx.textAlign    = "center";
-        ctx.textBaseline = "top";
-        ctx.fillStyle    = dimmed ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.9)";
-        ctx.fillText(t.name, nx, ny + r + 4 / globalScale);
-      }
-    } else {
-      // Document satellite — small white dot
-      ctx.beginPath();
-      ctx.arc(nx, ny, 2.5, 0, 2 * Math.PI);
-      ctx.fillStyle = dimmed ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.6)";
-      ctx.fill();
-    }
-  }, []);
-
-  const paintNodePointer = useCallback((
-    node: GraphNode,
-    color: string,
-    ctx: CanvasRenderingContext2D,
-  ) => {
-    const r = node.nodeType === "topic"
-      ? Math.sqrt((node as TopicNode).chunk_count ?? 1) * 3 + 10
-      : 8;
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(node.x ?? 0, node.y ?? 0, r, 0, 2 * Math.PI);
-    ctx.fill();
-  }, []);
-
-  const getLinkColor = useCallback((link: GraphLink) => {
-    const hovered = hoveredNodeRef.current;
-    const sim     = (link as any).similarity ?? 0.5;
-    const isDocLink = sim <= 0.3;
-
-    if (hovered) {
-      const s = nodeId(link.source);
-      const t = nodeId(link.target);
-      if (s !== hovered.id && t !== hovered.id) return "rgba(255,255,255,0.03)";
-      return `rgba(255,255,255,${sim * 0.55})`;
-    }
-    return isDocLink
-      ? "rgba(255,255,255,0.07)"
-      : `rgba(255,255,255,${sim * 0.3})`;
-  }, []);
-
-  const getLinkWidth = useCallback((link: GraphLink) => {
-    const sim = (link as any).similarity ?? 0.5;
-    return sim <= 0.3 ? 0.4 : sim * 1.5;
-  }, []);
-
-  // ── Derived counts ────────────────────────────────────────── //
-  const topicCount = graphData.nodes.filter(n => n.nodeType === "topic").length;
-  const docCount   = graphData.nodes.filter(n => n.nodeType === "document").length;
-  const isEmpty    = !loadingGraph && topicCount === 0;
+function ChunkCard({
+  chunk, index, onOpenDoc,
+}: {
+  chunk: Chunk
+  index: number
+  onOpenDoc: (docId: number) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const preview = chunk.chunk.slice(0, 160)
+  const isLong = chunk.chunk.length > 160
 
   return (
-    <div className="app-layout">
-
-      {/* ── Sidebar ─────────────────────────────────── */}
-      <aside className="sidebar">
-        <Link href="/" className="sidebar-logo">
-          <div className="sidebar-logo-icon"><IconBrain /></div>
-          <span className="sidebar-logo-text">Second Brain</span>
-        </Link>
-
-        <nav className="sidebar-nav">
-          <Link href="/" className="sidebar-item">
-            <IconHome /><span>Home</span>
-          </Link>
-          <Link href="/topics" className="sidebar-item active">
-            <IconGraph /><span>Topics</span>
-          </Link>
-        </nav>
-
-        <div className="sidebar-footer">
+    <div
+      style={{
+        background: COLORS.surface,
+        border: `1px solid ${COLORS.border}`,
+        borderRadius: 10,
+        padding: '12px 14px',
+        animation: `fadeSlideIn 0.25s ease both`,
+        animationDelay: `${index * 40}ms`,
+        transition: 'border-color 0.15s',
+      }}
+      onMouseEnter={e => (e.currentTarget.style.borderColor = COLORS.borderBright)}
+      onMouseLeave={e => (e.currentTarget.style.borderColor = COLORS.border)}
+    >
+      <p style={{
+        margin: 0,
+        fontSize: 12,
+        lineHeight: 1.65,
+        color: COLORS.text,
+        fontFamily: 'Georgia, serif',
+      }}>
+        {expanded ? chunk.chunk : preview}
+        {isLong && !expanded && <span style={{ color: COLORS.textMuted }}>…</span>}
+      </p>
+      <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center' }}>
+        {isLong && (
           <button
-            className="sidebar-signout"
-            onClick={() => supabase.auth.signOut().then(() => router.push("/"))}
+            onClick={() => setExpanded(e => !e)}
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              color: COLORS.textMuted, fontSize: 11, padding: 0,
+            }}
           >
-            Sign out
+            {expanded ? '↑ Collapse' : '↓ Read more'}
+          </button>
+        )}
+        <button
+          onClick={() => onOpenDoc(chunk.document_id)}
+          style={{
+            marginLeft: 'auto',
+            background: COLORS.accentGlow,
+            border: `1px solid ${COLORS.accentDim}`,
+            borderRadius: 6,
+            color: COLORS.accent,
+            fontSize: 11,
+            padding: '3px 10px',
+            cursor: 'pointer',
+            transition: 'background 0.15s',
+          }}
+          onMouseEnter={e => (e.currentTarget.style.background = COLORS.accentGlow2)}
+          onMouseLeave={e => (e.currentTarget.style.background = COLORS.accentGlow)}
+        >
+          Open document →
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function DocPreviewModal({
+  doc, onClose,
+}: {
+  doc: Document
+  onClose: () => void
+}) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 200,
+        background: 'rgba(0,0,0,0.7)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        backdropFilter: 'blur(6px)',
+        animation: 'fadeIn 0.15s ease',
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: COLORS.surface,
+          border: `1px solid ${COLORS.borderBright}`,
+          borderRadius: 16,
+          padding: '28px 32px',
+          maxWidth: 540,
+          width: '90%',
+          animation: 'scaleIn 0.2s ease',
+          boxShadow: `0 0 60px rgba(0,0,0,0.6), 0 0 30px ${COLORS.accentGlow}`,
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+          <h2 style={{
+            margin: 0, fontSize: 17, fontWeight: 600,
+            color: COLORS.text, lineHeight: 1.4,
+            fontFamily: 'Georgia, serif',
+          }}>
+            {doc.title}
+          </h2>
+          <button
+            onClick={onClose}
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              color: COLORS.textMuted, fontSize: 18, padding: '0 0 0 12px', lineHeight: 1,
+            }}
+          >×</button>
+        </div>
+
+        <p style={{
+          margin: '0 0 20px',
+          fontSize: 13, lineHeight: 1.7,
+          color: COLORS.textMuted,
+          fontFamily: 'Georgia, serif',
+        }}>
+          {doc.excerpt || 'No excerpt available.'}
+        </p>
+
+        <div style={{ display: 'flex', gap: 8 }}>
+          <a
+            href={doc.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              flex: 1, textAlign: 'center',
+              background: COLORS.accent,
+              color: '#fff', border: 'none',
+              borderRadius: 8, padding: '10px 0',
+              fontSize: 13, fontWeight: 500,
+              textDecoration: 'none',
+              transition: 'opacity 0.15s',
+            }}
+            onMouseEnter={e => (e.currentTarget.style.opacity = '0.85')}
+            onMouseLeave={e => (e.currentTarget.style.opacity = '1')}
+          >
+            Open original source ↗
+          </a>
+          <button
+            onClick={onClose}
+            style={{
+              background: COLORS.surfaceHover, border: `1px solid ${COLORS.border}`,
+              borderRadius: 8, padding: '10px 16px',
+              color: COLORS.textMuted, fontSize: 13, cursor: 'pointer',
+            }}
+          >
+            Close
           </button>
         </div>
-      </aside>
 
-      {/* ── Main ────────────────────────────────────── */}
-      <main className="main-content" style={{ overflow: "hidden", display: "flex", flexDirection: "column" }}>
+        <p style={{ margin: '14px 0 0', fontSize: 11, color: COLORS.textDim }}>
+          Captured {new Date(doc.captured_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+        </p>
+      </div>
+    </div>
+  )
+}
 
-        {/* Title bar */}
-        <div style={{
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "20px 28px", height: "64px", flexShrink: 0,
-        }}>
-          <div>
-            <h1 style={{ fontSize: "18px", fontWeight: 600, color: "var(--text-1)", lineHeight: 1 }}>
-              Knowledge Graph
-            </h1>
-            {!loadingGraph && topicCount > 0 && (
-              <p style={{ fontSize: "11.5px", color: "var(--text-3)", marginTop: "4px" }}>
-                {topicCount} topics · {docCount} documents · {graphData.links.filter(l => (l as any).similarity > 0.3).length} connections
-              </p>
-            )}
-          </div>
+// ─── Main component ───────────────────────────────────────────────────────────
 
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            {rebuildMsg && (
-              <span style={{ fontSize: "12px", color: rebuildMsg.startsWith("Need") ? "var(--amber)" : "var(--green)" }}>
-                {rebuildMsg}
-              </span>
-            )}
-            <button className="btn btn-primary" onClick={handleRebuild} disabled={rebuilding}>
-              {rebuilding
-                ? <><div className="spinner spinner-sm spinner-white" />Rebuilding...</>
-                : <><IconRefresh />Rebuild Graph</>}
-            </button>
-          </div>
+export default function ConceptGraph() {
+  const svgRef = useRef<SVGSVGElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [nodes, setNodes] = useState<GraphNode[]>([])
+  const [links, setLinks] = useState<GraphLink[]>([])
+
+  // Panel state
+  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null)
+  const [panelChunks, setPanelChunks] = useState<Chunk[]>([])
+  const [chunksLoading, setChunksLoading] = useState(false)
+
+  // Doc preview
+  const [previewDoc, setPreviewDoc] = useState<Document | null>(null)
+  const [docLoading, setDocLoading] = useState(false)
+
+  // Search
+  const [search, setSearch] = useState('')
+
+  // ── Load graph data ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    async function load() {
+      try {
+        setLoading(true)
+        // Fetch topic graph (concepts + edges) from existing /topics endpoint
+        const data = await apiFetch('/concepts')
+
+        const maxChunks = Math.max(...data.nodes.map((n: any) => n.chunk_count ?? 1), 1)
+
+        const graphNodes: GraphNode[] = data.nodes.map((n: any) => ({
+          id: n.id,
+          name: n.name,
+          description: n.description ?? '',
+          document_count: n.document_count ?? 1,
+          chunk_count: n.chunk_count ?? 1,
+          radius: 10 + ((n.chunk_count ?? 1) / maxChunks) * 28,
+        }))
+
+        const idSet = new Set(graphNodes.map(n => n.id))
+        const graphLinks: GraphLink[] = data.edges
+          .filter((e: any) => idSet.has(e.source) && idSet.has(e.target))
+          .map((e: any) => ({
+            source: e.source,
+            target: e.target,
+            similarity: e.weight ?? 0.5,
+          }))
+
+        setNodes(graphNodes)
+        setLinks(graphLinks)
+      } catch (e: any) {
+        setError(e.message)
+      } finally {
+        setLoading(false)
+      }
+    }
+    load()
+  }, [])
+
+  // ── Click concept → load chunks ─────────────────────────────────────────────
+  const handleNodeClick = useCallback(async (node: GraphNode) => {
+    setSelectedNode(node)
+    setPanelChunks([])
+    setChunksLoading(true)
+    try {
+      // Use existing /query endpoint: search by concept name to get relevant chunks
+      const token = await getToken()
+      const res = await fetch(`${API}/concepts/${node.id}/chunks`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+
+      const data = await res.json()
+
+      setPanelChunks(
+        Array.isArray(data)
+          ? data.slice(0, 8).map((c: any) => ({
+              id: c.chunk_id,
+              chunk: c.chunk,
+              document_id: c.document_id,
+            }))
+          : []
+      )
+    } catch {
+      setPanelChunks([])
+    } finally {
+      setChunksLoading(false)
+    }
+  }, [])
+
+  // ── Click chunk → load doc preview ──────────────────────────────────────────
+  const handleOpenDoc = useCallback(async (docId: number) => {
+    setDocLoading(true)
+    try {
+      const doc = await apiFetch(`/documents/${docId}`)
+      setPreviewDoc(doc)
+    } catch {
+      setPreviewDoc(null)
+    } finally {
+      setDocLoading(false)
+    }
+  }, [])
+
+  // ── D3 force graph ───────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!svgRef.current || nodes.length === 0) return
+
+    const svg = d3.select(svgRef.current)
+    svg.selectAll('*').remove()
+
+    const W = svgRef.current.clientWidth || 900
+    const H = svgRef.current.clientHeight || 600
+
+    // Zoom container
+    const g = svg.append('g')
+
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.3, 3])
+      .on('zoom', (event) => g.attr('transform', event.transform))
+    svg.call(zoom)
+
+    // Defs: glow filter + gradient
+    const defs = svg.append('defs')
+
+    const glow = defs.append('filter').attr('id', 'glow')
+    glow.append('feGaussianBlur').attr('stdDeviation', '4').attr('result', 'blur')
+    const feMerge = glow.append('feMerge')
+    feMerge.append('feMergeNode').attr('in', 'blur')
+    feMerge.append('feMergeNode').attr('in', 'SourceGraphic')
+
+    const glowSoft = defs.append('filter').attr('id', 'glowSoft')
+    glowSoft.append('feGaussianBlur').attr('stdDeviation', '2').attr('result', 'blur')
+    const feMerge2 = glowSoft.append('feMerge')
+    feMerge2.append('feMergeNode').attr('in', 'blur')
+    feMerge2.append('feMergeNode').attr('in', 'SourceGraphic')
+
+    // Filter active nodes by search
+    const activeIds = search.trim()
+      ? new Set(nodes.filter(n => n.name.toLowerCase().includes(search.toLowerCase())).map(n => n.id))
+      : null
+
+    // Simulation
+    const sim = d3.forceSimulation<GraphNode>(nodes)
+      .force('link', d3.forceLink<GraphNode, GraphLink>(links)
+        .id(d => d.id)
+        .distance(d => 120 - d.similarity * 60)
+        .strength(d => d.similarity * 0.6))
+      .force('charge', d3.forceManyBody().strength(-280))
+      .force('center', d3.forceCenter(W / 2, H / 2))
+      .force('collision', d3.forceCollide<GraphNode>().radius(d => d.radius + 14))
+
+    // Links
+    const link = g.append('g').selectAll('line')
+      .data(links)
+      .join('line')
+      .attr('stroke', d => d.similarity > 0.75 ? COLORS.linkBright : COLORS.link)
+      .attr('stroke-width', d => Math.max(0.5, d.similarity * 2))
+      .attr('stroke-opacity', d => 0.3 + d.similarity * 0.4)
+
+    // Node groups
+    const node = g.append('g').selectAll<SVGGElement, GraphNode>('g')
+      .data(nodes)
+      .join('g')
+      .attr('cursor', 'pointer')
+      .call(
+        d3.drag<SVGGElement, GraphNode>()
+          .on('start', (event: any, d: GraphNode) => {
+            if (!event.active) sim.alphaTarget(0.3).restart()
+            d.fx = d.x; d.fy = d.y
+          })
+          .on('drag', (event: any, d: GraphNode) => { d.fx = event.x; d.fy = event.y })
+          .on('end', (event: any, d: GraphNode) => {
+            if (!event.active) sim.alphaTarget(0)
+            d.fx = null; d.fy = null
+          })
+      )
+      .on('click', (event: any, d: GraphNode) => {
+        event.stopPropagation()
+        handleNodeClick(d)
+      })
+
+    // Outer glow ring (for selected / highlighted)
+    node.append('circle')
+      .attr('r', d => d.radius + 6)
+      .attr('fill', 'none')
+      .attr('stroke', COLORS.accent)
+      .attr('stroke-width', 1.5)
+      .attr('stroke-opacity', d => activeIds
+        ? (activeIds.has(d.id) ? 0.7 : 0.05)
+        : 0.15)
+      .attr('filter', 'url(#glow)')
+      .attr('class', 'ring')
+
+    // Main circle
+    node.append('circle')
+      .attr('r', d => d.radius)
+      .attr('fill', d => {
+        // Color by size: small = dim, large = bright accent
+        const t = Math.min(d.chunk_count / 20, 1)
+        return d3.interpolateRgb(COLORS.nodeMin, COLORS.nodeMax)(t)
+      })
+      .attr('stroke', COLORS.borderBright)
+      .attr('stroke-width', 1)
+      .attr('opacity', d => activeIds ? (activeIds.has(d.id) ? 1 : 0.2) : 0.9)
+      .attr('filter', d => d.chunk_count > 5 ? 'url(#glowSoft)' : 'none')
+
+    // Label
+    node.append('text')
+      .text(d => d.name.length > 18 ? d.name.slice(0, 16) + '…' : d.name)
+      .attr('text-anchor', 'middle')
+      .attr('dy', d => d.radius + 14)
+      .attr('fill', d => activeIds ? (activeIds.has(d.id) ? COLORS.text : COLORS.textDim) : COLORS.textMuted)
+      .attr('font-size', d => Math.max(10, Math.min(13, 9 + d.radius * 0.18)))
+      .attr('font-family', 'system-ui, sans-serif')
+      .attr('font-weight', '500')
+      .attr('pointer-events', 'none')
+
+    // Chunk count badge
+    node.append('text')
+      .text(d => d.chunk_count)
+      .attr('text-anchor', 'middle')
+      .attr('dy', '0.35em')
+      .attr('fill', '#fff')
+      .attr('font-size', d => Math.max(8, Math.min(12, d.radius * 0.55)))
+      .attr('font-family', 'system-ui, sans-serif')
+      .attr('font-weight', '600')
+      .attr('pointer-events', 'none')
+      .attr('opacity', d => d.radius > 14 ? 0.85 : 0)
+
+    // Tick
+    sim.on('tick', () => {
+      link
+        .attr('x1', d => (d.source as GraphNode).x!)
+        .attr('y1', d => (d.source as GraphNode).y!)
+        .attr('x2', d => (d.target as GraphNode).x!)
+        .attr('y2', d => (d.target as GraphNode).y!)
+
+      node.attr('transform', d => `translate(${d.x},${d.y})`)
+    })
+
+    // Click background to deselect
+    svg.on('click', () => setSelectedNode(null))
+
+    return () => { sim.stop() }
+  }, [nodes, links, search, handleNodeClick])
+
+  // ── Highlight selected node ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (!svgRef.current) return
+    d3.select(svgRef.current)
+      .selectAll<SVGCircleElement, GraphNode>('.ring')
+      .attr('stroke-opacity', (d: GraphNode) =>
+        selectedNode?.id === d.id ? 1 : (search ? 0.05 : 0.15))
+      .attr('r', (d: GraphNode) =>
+        selectedNode?.id === d.id ? d.radius + 9 : d.radius + 6)
+  }, [selectedNode, search])
+
+  const filteredNodes = search.trim()
+    ? nodes.filter(n => n.name.toLowerCase().includes(search.toLowerCase()))
+    : nodes
+
+  // ─── Render ─────────────────────────────────────────────────────────────────
+  return (
+    <div style={{
+      minHeight: '100vh',
+      background: COLORS.bg,
+      display: 'flex',
+      flexDirection: 'column',
+      fontFamily: 'system-ui, -apple-system, sans-serif',
+      color: COLORS.text,
+      overflow: 'hidden',
+    }}>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg) } }
+        @keyframes fadeSlideIn {
+          from { opacity: 0; transform: translateY(6px) }
+          to   { opacity: 1; transform: translateY(0) }
+        }
+        @keyframes fadeIn {
+          from { opacity: 0 } to { opacity: 1 }
+        }
+        @keyframes scaleIn {
+          from { opacity: 0; transform: scale(0.96) }
+          to   { opacity: 1; transform: scale(1) }
+        }
+        @keyframes panelIn {
+          from { opacity: 0; transform: translateX(16px) }
+          to   { opacity: 1; transform: translateX(0) }
+        }
+        ::-webkit-scrollbar { width: 4px }
+        ::-webkit-scrollbar-track { background: transparent }
+        ::-webkit-scrollbar-thumb { background: ${COLORS.borderBright}; border-radius: 4px }
+      `}</style>
+
+      {/* ── Header ── */}
+      <header style={{
+        padding: '16px 24px',
+        borderBottom: `1px solid ${COLORS.border}`,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 16,
+        flexShrink: 0,
+        background: 'rgba(10,10,15,0.8)',
+        backdropFilter: 'blur(12px)',
+        position: 'sticky',
+        top: 0,
+        zIndex: 10,
+      }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 16, fontWeight: 600, letterSpacing: '-0.3px', color: COLORS.text }}>
+            Concept Graph
+          </h1>
+          <p style={{ margin: 0, fontSize: 12, color: COLORS.textMuted, marginTop: 1 }}>
+            {nodes.length} concepts · {links.length} connections
+          </p>
         </div>
 
-        {/* Graph */}
-        <div style={{ flex: 1, position: "relative" }}>
-          {loadingGraph ? (
+        {/* Search */}
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Filter concepts…"
+          style={{
+            marginLeft: 'auto',
+            background: COLORS.surface,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 8,
+            padding: '7px 14px',
+            color: COLORS.text,
+            fontSize: 13,
+            width: 220,
+            outline: 'none',
+            transition: 'border-color 0.15s',
+          }}
+          onFocus={e => (e.target.style.borderColor = COLORS.accentDim)}
+          onBlur={e => (e.target.style.borderColor = COLORS.border)}
+        />
+
+        {/* Legend */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+          <div style={{
+            width: 8, height: 8, borderRadius: '50%',
+            background: `linear-gradient(135deg, ${COLORS.nodeMin}, ${COLORS.nodeMax})`,
+          }} />
+          <span style={{ fontSize: 11, color: COLORS.textMuted }}>chunk density</span>
+        </div>
+      </header>
+
+      {/* ── Body ── */}
+      <div style={{ flex: 1, display: 'flex', position: 'relative', overflow: 'hidden' }}>
+
+        {/* Graph canvas */}
+        <div ref={containerRef} style={{ flex: 1, position: 'relative' }}>
+          {loading && (
             <div style={{
-              height: dimensions.height,
-              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-              gap: "14px", color: "var(--text-2)", fontSize: "14px",
+              position: 'absolute', inset: 0, display: 'flex',
+              alignItems: 'center', justifyContent: 'center', gap: 12,
+              color: COLORS.textMuted, fontSize: 14,
             }}>
-              <div className="spinner" />
-              <span>{autoRebuildMsg || "Loading graph..."}</span>
-              {autoRebuildMsg && (
-                <span style={{ fontSize: "12px", color: "var(--text-3)" }}>
-                  This may take 10–20 seconds
-                </span>
-              )}
+              <Spinner />
+              Building concept graph…
             </div>
-          ) : notEnoughData ? (
-            <div style={{ padding: "28px" }}>
-              <div className="empty-state">
-                <p>Not enough captures yet.<br />
-                  <span style={{ fontSize: "12px", color: "var(--text-3)" }}>
-                    Save at least 10 pages using the extension, then come back.
-                  </span>
-                </p>
-              </div>
+          )}
+
+          {error && (
+            <div style={{
+              position: 'absolute', inset: 0, display: 'flex',
+              alignItems: 'center', justifyContent: 'center',
+              flexDirection: 'column', gap: 8,
+            }}>
+              <span style={{ fontSize: 24 }}>⚠</span>
+              <p style={{ color: COLORS.danger, fontSize: 13, margin: 0 }}>{error}</p>
             </div>
-          ) : isEmpty ? (
-            <div style={{ padding: "28px" }}>
-              <div className="empty-state">
-                <p>No topics yet.<br />
-                  <span style={{ fontSize: "12px", color: "var(--text-3)" }}>
-                    Capture at least 10 pages and click Rebuild Graph.
-                  </span>
-                </p>
-              </div>
+          )}
+
+          {!loading && nodes.length === 0 && !error && (
+            <div style={{
+              position: 'absolute', inset: 0, display: 'flex',
+              alignItems: 'center', justifyContent: 'center',
+              flexDirection: 'column', gap: 10,
+            }}>
+              <p style={{ color: COLORS.textMuted, fontSize: 14, margin: 0 }}>
+                No concepts yet.
+              </p>
+              <p style={{ color: COLORS.textDim, fontSize: 12, margin: 0 }}>
+                Capture some pages, then rebuild topics.
+              </p>
             </div>
-          ) : (
-            <ForceGraph2D
-              ref={fgRef}
-              graphData={graphData}
-              width={dimensions.width}
-              height={dimensions.height}
-              backgroundColor="#0a0a0f"
-              nodeLabel={(node) => (node as GraphNode).nodeType === "topic" ? "" : (node as GraphNode).name}
-              nodeCanvasObject={paintNode as any}
-              nodeCanvasObjectMode={() => "replace"}
-              nodePointerAreaPaint={paintNodePointer as any}
-              onNodeClick={handleNodeClick as any}
-              onNodeHover={handleNodeHover as any}
-              linkColor={getLinkColor as any}
-              linkWidth={getLinkWidth as any}
-              linkDirectionalParticles={0}
-              d3AlphaDecay={0.02}
-              d3VelocityDecay={0.3}
-              cooldownTime={3000}
-            />
+          )}
+
+          <svg
+            ref={svgRef}
+            style={{ width: '100%', height: '100%', display: 'block' }}
+          />
+
+          {/* Zoom hint */}
+          {!loading && nodes.length > 0 && (
+            <div style={{
+              position: 'absolute', bottom: 16, left: 16,
+              color: COLORS.textDim, fontSize: 11,
+              pointerEvents: 'none',
+            }}>
+              Scroll to zoom · Drag to pan · Click node to explore
+            </div>
           )}
         </div>
 
-        {/* Knowledge Gaps */}
-        {gaps.length > 0 && (
-          <div style={{ padding: "0 28px 40px", flexShrink: 0 }}>
-            <div className="section-label" style={{ marginBottom: "12px" }}>Knowledge Gaps</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              {gaps.map((gap, i) => (
-                <div
-                  key={i}
-                  className="card"
-                  style={{ padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px" }}
-                >
-                  <p style={{ fontSize: "13.5px", color: "var(--text-2)", lineHeight: 1.55, flex: 1 }}>
-                    {gap.suggestion}
-                  </p>
-                  <button
-                    className="btn btn-ghost"
-                    style={{ flexShrink: 0, fontSize: "12px", padding: "6px 12px" }}
-                    onClick={() => router.push(`/?q=${encodeURIComponent(`${gap.topic_a} ${gap.topic_b}`)}`)}
-                  >
-                    Explore →
-                  </button>
+        {/* ── Side panel ── */}
+        {selectedNode && (
+          <div style={{
+            width: 340,
+            background: COLORS.surface,
+            borderLeft: `1px solid ${COLORS.border}`,
+            display: 'flex',
+            flexDirection: 'column',
+            animation: 'panelIn 0.2s ease',
+            overflow: 'hidden',
+            flexShrink: 0,
+          }}>
+            {/* Panel header */}
+            <div style={{
+              padding: '18px 20px 14px',
+              borderBottom: `1px solid ${COLORS.border}`,
+              flexShrink: 0,
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div>
+                  <div style={{
+                    display: 'inline-block',
+                    background: COLORS.accentGlow,
+                    border: `1px solid ${COLORS.accentDim}`,
+                    borderRadius: 6,
+                    padding: '2px 8px',
+                    fontSize: 10,
+                    color: COLORS.accent,
+                    marginBottom: 8,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                    fontWeight: 600,
+                  }}>
+                    Concept
+                  </div>
+                  <h2 style={{
+                    margin: 0,
+                    fontSize: 17,
+                    fontWeight: 600,
+                    color: COLORS.text,
+                    lineHeight: 1.3,
+                    fontFamily: 'Georgia, serif',
+                  }}>
+                    {selectedNode.name}
+                  </h2>
+                  {selectedNode.description && (
+                    <p style={{
+                      margin: '6px 0 0',
+                      fontSize: 12,
+                      color: COLORS.textMuted,
+                      lineHeight: 1.55,
+                    }}>
+                      {selectedNode.description}
+                    </p>
+                  )}
                 </div>
+                <button
+                  onClick={() => setSelectedNode(null)}
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    color: COLORS.textMuted, fontSize: 18,
+                    padding: '0 0 0 8px', lineHeight: 1, flexShrink: 0,
+                  }}
+                >×</button>
+              </div>
+
+              <div style={{
+                marginTop: 12,
+                display: 'flex',
+                gap: 12,
+              }}>
+                <Stat label="chunks" value={selectedNode.chunk_count} />
+              </div>
+            </div>
+
+            {/* Chunks list */}
+            <div style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: '14px 16px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+            }}>
+              <p style={{
+                margin: '0 0 4px',
+                fontSize: 11,
+                color: COLORS.textDim,
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px',
+                fontWeight: 600,
+              }}>
+                Relevant chunks
+              </p>
+
+              {chunksLoading && (
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0', color: COLORS.textMuted, fontSize: 13 }}>
+                  <Spinner /> Loading chunks…
+                </div>
+              )}
+
+              {!chunksLoading && panelChunks.length === 0 && (
+                <p style={{ fontSize: 13, color: COLORS.textMuted, margin: 0 }}>
+                  No chunks found for this concept.
+                </p>
+              )}
+
+              {!chunksLoading && panelChunks.map((chunk, i) => (
+                <ChunkCard
+                  key={chunk.id}
+                  chunk={chunk}
+                  index={i}
+                  onOpenDoc={handleOpenDoc}
+                />
               ))}
             </div>
           </div>
         )}
-      </main>
+      </div>
 
-      {/* ── Side panel ──────────────────────────────── */}
-      {selectedTopic && (
+      {/* Doc preview modal */}
+      {previewDoc && (
+        <DocPreviewModal
+          doc={previewDoc}
+          onClose={() => setPreviewDoc(null)}
+        />
+      )}
+
+      {/* Doc loading overlay */}
+      {docLoading && (
         <div style={{
-          position: "fixed", top: 0, right: 0, bottom: 0, width: "320px",
-          background: "var(--surface)",
-          borderLeft: "1px solid var(--border)",
-          display: "flex", flexDirection: "column",
-          zIndex: 30,
-          animation: "slideIn 0.18s ease forwards",
+          position: 'fixed', inset: 0, zIndex: 150,
+          background: 'rgba(0,0,0,0.5)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
-          {/* Colour accent strip */}
-          <div style={{ height: "3px", background: selectedTopic.color, flexShrink: 0 }} />
-
-          {/* Header */}
-          <div style={{
-            padding: "18px 20px 14px",
-            borderBottom: "1px solid var(--border)",
-            display: "flex", alignItems: "flex-start", gap: "12px",
-          }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <h2 style={{ fontSize: "15px", fontWeight: 600, color: "var(--text-1)", lineHeight: 1.3 }}>
-                {selectedTopic.name}
-              </h2>
-              {selectedTopic.description && (
-                <p style={{ fontSize: "12.5px", color: "var(--text-2)", marginTop: "6px", lineHeight: 1.55 }}>
-                  {selectedTopic.description}
-                </p>
-              )}
-              <span
-                className="badge"
-                style={{
-                  marginTop: "10px",
-                  background: selectedTopic.color + "22",
-                  color: selectedTopic.color,
-                  border: `1px solid ${selectedTopic.color}44`,
-                }}
-              >
-                {selectedTopic.chunk_count} capture{selectedTopic.chunk_count !== 1 ? "s" : ""}
-              </span>
-            </div>
-            <button
-              onClick={() => setSelectedTopic(null)}
-              style={{
-                background: "none", border: "none", color: "var(--text-3)",
-                fontSize: "20px", lineHeight: 1, padding: "2px", flexShrink: 0,
-              }}
-              onMouseOver={e => (e.currentTarget.style.color = "var(--text-1)")}
-              onMouseOut={e  => (e.currentTarget.style.color = "var(--text-3)")}
-            >
-              ×
-            </button>
-          </div>
-
-          {/* Document list */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "16px" }}>
-            <div className="section-label" style={{ marginBottom: "10px" }}>
-              Documents · {(topicDocsMap[selectedTopic.id] ?? []).length}
-            </div>
-
-            {(topicDocsMap[selectedTopic.id] ?? []).length === 0 ? (
-              <p style={{ fontSize: "13px", color: "var(--text-3)" }}>No documents found.</p>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                {(topicDocsMap[selectedTopic.id] ?? []).map(doc => (
-                  <Link
-                    key={doc.id}
-                    href={`/document/${doc.id}`}
-                    className="card card-link"
-                    style={{ padding: "12px 14px", display: "block" }}
-                  >
-                    <p style={{
-                      fontSize: "13px", fontWeight: 500, color: "var(--text-1)",
-                      lineHeight: 1.4, marginBottom: "3px",
-                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                    }}>
-                      {doc.title || "Untitled"}
-                    </p>
-                    <p style={{ fontSize: "11px", color: "var(--text-3)", marginBottom: "5px" }}>
-                      {hostname(doc.url)} · {timeAgo(doc.captured_at)}
-                    </p>
-                    {doc.excerpt && (
-                      <p style={{
-                        fontSize: "12px", color: "var(--text-2)", lineHeight: 1.5,
-                        display: "-webkit-box",
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: "vertical",
-                        overflow: "hidden",
-                      }}>
-                        {doc.excerpt}
-                      </p>
-                    )}
-                  </Link>
-                ))}
-              </div>
-            )}
-          </div>
+          <Spinner />
         </div>
       )}
     </div>
-  );
+  )
+}
+
+// ─── Small helper ─────────────────────────────────────────────────────────────
+
+function Stat({ label, value }: { label: string; value: number }) {
+  return (
+    <div style={{
+      background: COLORS.bg,
+      border: `1px solid ${COLORS.border}`,
+      borderRadius: 8,
+      padding: '6px 12px',
+    }}>
+      <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.text }}>{value}</div>
+      <div style={{ fontSize: 10, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.4px' }}>{label}</div>
+    </div>
+  )
 }
