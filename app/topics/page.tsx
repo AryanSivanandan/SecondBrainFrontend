@@ -299,44 +299,90 @@ export default function ConceptGraph() {
   // Search
   const [search, setSearch] = useState('')
 
-  // ── Load graph data ─────────────────────────────────────────────────────────
-  useEffect(() => {
-    async function load() {
-      try {
-        setLoading(true)
-        // Fetch topic graph (concepts + edges) from existing /topics endpoint
-        const data = await apiFetch('/concepts')
+  // Build graph
+  const [building, setBuilding] = useState(false)
+  const [buildResult, setBuildResult] = useState<string | null>(null)
 
-        const maxChunks = Math.max(...data.nodes.map((n: any) => n.chunk_count ?? 1), 1)
+  // ── Shared graph loader (used on mount and after build) ──────────────────────
+  const loadGraph = useCallback(async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      const data = await apiFetch('/concepts')
 
-        const graphNodes: GraphNode[] = data.nodes.map((n: any) => ({
-          id: n.id,
-          name: n.name,
-          description: n.description ?? '',
-          document_count: n.document_count ?? 1,
-          chunk_count: n.chunk_count ?? 1,
-          radius: 10 + ((n.chunk_count ?? 1) / maxChunks) * 28,
+      const maxChunks = data.nodes.length
+        ? Math.max(...data.nodes.map((n: any) => n.chunk_count ?? 1))
+        : 1
+
+      const graphNodes: GraphNode[] = data.nodes.map((n: any) => ({
+        id: n.id,
+        name: n.name,
+        description: n.description ?? '',
+        document_count: n.document_count ?? 1,
+        chunk_count: n.chunk_count ?? 1,
+        radius: 10 + ((n.chunk_count ?? 1) / maxChunks) * 28,
+      }))
+
+      const idSet = new Set(graphNodes.map(n => n.id))
+      const graphLinks: GraphLink[] = data.edges
+        .filter((e: any) => idSet.has(e.source) && idSet.has(e.target))
+        .map((e: any) => ({
+          source: e.source,
+          target: e.target,
+          similarity: e.weight ?? 0.5,
         }))
 
-        const idSet = new Set(graphNodes.map(n => n.id))
-        const graphLinks: GraphLink[] = data.edges
-          .filter((e: any) => idSet.has(e.source) && idSet.has(e.target))
-          .map((e: any) => ({
-            source: e.source,
-            target: e.target,
-            similarity: e.weight ?? 0.5,
-          }))
-
-        setNodes(graphNodes)
-        setLinks(graphLinks)
-      } catch (e: any) {
-        setError(e.message)
-      } finally {
-        setLoading(false)
-      }
+      setNodes(graphNodes)
+      setLinks(graphLinks)
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
     }
-    load()
   }, [])
+
+  // ── Load graph data on mount ─────────────────────────────────────────────────
+  useEffect(() => {
+    loadGraph()
+  }, [loadGraph])
+
+  // ── Auto-clear build result message (leak-safe) ─────────────────────────────
+  useEffect(() => {
+    if (!buildResult) return
+    const t = setTimeout(() => setBuildResult(null), 5000)
+    return () => clearTimeout(t)
+  }, [buildResult])
+
+  // ── Build Graph handler ──────────────────────────────────────────────────────
+  const handleBuildGraph = useCallback(async () => {
+    setBuilding(true)
+    setBuildResult(null)
+    try {
+      const token = await getToken()
+      const res = await fetch(`${API}/concepts/build-graph`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        setBuildResult(`Failed: ${body.detail ?? res.status}`)
+        return
+      }
+      const result = await res.json()
+      const edgeCount = result.edges_created ?? result.edges ?? 0
+      setBuildResult(
+        result.status === 'not_enough_concepts'
+          ? 'Need at least 2 concepts — capture more pages first.'
+          : `Done — ${edgeCount} connection${edgeCount === 1 ? '' : 's'} built across ${result.concepts} concepts.`
+      )
+      // Reload graph so new edges appear immediately
+      await loadGraph()
+    } catch (e: any) {
+      setBuildResult(`Error: ${e.message}`)
+    } finally {
+      setBuilding(false)
+    }
+  }, [loadGraph])
 
   // ── Click concept → load chunks ─────────────────────────────────────────────
   const handleNodeClick = useCallback(async (node: GraphNode) => {
@@ -344,16 +390,15 @@ export default function ConceptGraph() {
     setPanelChunks([])
     setChunksLoading(true)
     try {
-      // Use existing /query endpoint: search by concept name to get relevant chunks
       const token = await getToken()
       const res = await fetch(`${API}/concepts/${node.id}/chunks`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { Authorization: `Bearer ${token}` },
       })
-
+      if (!res.ok) {
+        setPanelChunks([])
+        return
+      }
       const data = await res.json()
-
       setPanelChunks(
         Array.isArray(data)
           ? data.slice(0, 8).map((c: any) => ({
@@ -393,7 +438,6 @@ export default function ConceptGraph() {
     const W = svgRef.current.clientWidth || 900
     const H = svgRef.current.clientHeight || 600
 
-    // Zoom container
     const g = svg.append('g')
 
     const zoom = d3.zoom<SVGSVGElement, unknown>()
@@ -401,7 +445,6 @@ export default function ConceptGraph() {
       .on('zoom', (event) => g.attr('transform', event.transform))
     svg.call(zoom)
 
-    // Defs: glow filter + gradient
     const defs = svg.append('defs')
 
     const glow = defs.append('filter').attr('id', 'glow')
@@ -416,12 +459,10 @@ export default function ConceptGraph() {
     feMerge2.append('feMergeNode').attr('in', 'blur')
     feMerge2.append('feMergeNode').attr('in', 'SourceGraphic')
 
-    // Filter active nodes by search
     const activeIds = search.trim()
       ? new Set(nodes.filter(n => n.name.toLowerCase().includes(search.toLowerCase())).map(n => n.id))
       : null
 
-    // Simulation
     const sim = d3.forceSimulation<GraphNode>(nodes)
       .force('link', d3.forceLink<GraphNode, GraphLink>(links)
         .id(d => d.id)
@@ -431,7 +472,6 @@ export default function ConceptGraph() {
       .force('center', d3.forceCenter(W / 2, H / 2))
       .force('collision', d3.forceCollide<GraphNode>().radius(d => d.radius + 14))
 
-    // Links
     const link = g.append('g').selectAll('line')
       .data(links)
       .join('line')
@@ -439,7 +479,6 @@ export default function ConceptGraph() {
       .attr('stroke-width', d => Math.max(0.5, d.similarity * 2))
       .attr('stroke-opacity', d => 0.3 + d.similarity * 0.4)
 
-    // Node groups
     const node = g.append('g').selectAll<SVGGElement, GraphNode>('g')
       .data(nodes)
       .join('g')
@@ -461,7 +500,6 @@ export default function ConceptGraph() {
         handleNodeClick(d)
       })
 
-    // Outer glow ring (for selected / highlighted)
     node.append('circle')
       .attr('r', d => d.radius + 6)
       .attr('fill', 'none')
@@ -473,11 +511,9 @@ export default function ConceptGraph() {
       .attr('filter', 'url(#glow)')
       .attr('class', 'ring')
 
-    // Main circle
     node.append('circle')
       .attr('r', d => d.radius)
       .attr('fill', d => {
-        // Color by size: small = dim, large = bright accent
         const t = Math.min(d.chunk_count / 20, 1)
         return d3.interpolateRgb(COLORS.nodeMin, COLORS.nodeMax)(t)
       })
@@ -486,7 +522,6 @@ export default function ConceptGraph() {
       .attr('opacity', d => activeIds ? (activeIds.has(d.id) ? 1 : 0.2) : 0.9)
       .attr('filter', d => d.chunk_count > 5 ? 'url(#glowSoft)' : 'none')
 
-    // Label
     node.append('text')
       .text(d => d.name.length > 18 ? d.name.slice(0, 16) + '…' : d.name)
       .attr('text-anchor', 'middle')
@@ -497,7 +532,6 @@ export default function ConceptGraph() {
       .attr('font-weight', '500')
       .attr('pointer-events', 'none')
 
-    // Chunk count badge
     node.append('text')
       .text(d => d.chunk_count)
       .attr('text-anchor', 'middle')
@@ -509,7 +543,6 @@ export default function ConceptGraph() {
       .attr('pointer-events', 'none')
       .attr('opacity', d => d.radius > 14 ? 0.85 : 0)
 
-    // Tick
     sim.on('tick', () => {
       link
         .attr('x1', d => (d.source as GraphNode).x!)
@@ -520,7 +553,6 @@ export default function ConceptGraph() {
       node.attr('transform', d => `translate(${d.x},${d.y})`)
     })
 
-    // Click background to deselect
     svg.on('click', () => setSelectedNode(null))
 
     return () => { sim.stop() }
@@ -536,10 +568,6 @@ export default function ConceptGraph() {
       .attr('r', (d: GraphNode) =>
         selectedNode?.id === d.id ? d.radius + 9 : d.radius + 6)
   }, [selectedNode, search])
-
-  const filteredNodes = search.trim()
-    ? nodes.filter(n => n.name.toLowerCase().includes(search.toLowerCase()))
-    : nodes
 
   // ─── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -618,6 +646,47 @@ export default function ConceptGraph() {
           onBlur={e => (e.target.style.borderColor = COLORS.border)}
         />
 
+        {/* Build Graph button + inline result message */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+          {buildResult && (
+            <span style={{
+              fontSize: 12,
+              color: buildResult.startsWith('Failed') || buildResult.startsWith('Error')
+                ? COLORS.danger
+                : COLORS.success,
+              maxWidth: 260,
+              animation: 'fadeIn 0.2s ease',
+            }}>
+              {buildResult}
+            </span>
+          )}
+          <button
+            onClick={handleBuildGraph}
+            disabled={building}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 7,
+              background: building ? COLORS.accentDim : COLORS.accent,
+              border: 'none',
+              borderRadius: 8,
+              color: '#fff',
+              fontSize: 13,
+              fontWeight: 500,
+              padding: '7px 14px',
+              cursor: building ? 'not-allowed' : 'pointer',
+              opacity: building ? 0.7 : 1,
+              transition: 'background 0.15s, opacity 0.15s',
+              whiteSpace: 'nowrap',
+            }}
+            onMouseEnter={e => { if (!building) e.currentTarget.style.background = COLORS.accentDim }}
+            onMouseLeave={e => { if (!building) e.currentTarget.style.background = COLORS.accent }}
+          >
+            {building && <Spinner />}
+            {building ? 'Building…' : 'Build Graph'}
+          </button>
+        </div>
+
         {/* Legend */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
           <div style={{
@@ -640,7 +709,7 @@ export default function ConceptGraph() {
               color: COLORS.textMuted, fontSize: 14,
             }}>
               <Spinner />
-              Building concept graph…
+              {building ? 'Rebuilding graph…' : 'Loading concept graph…'}
             </div>
           )}
 
@@ -665,7 +734,7 @@ export default function ConceptGraph() {
                 No concepts yet.
               </p>
               <p style={{ color: COLORS.textDim, fontSize: 12, margin: 0 }}>
-                Capture some pages, then rebuild topics.
+                Capture some pages, then click Build Graph.
               </p>
             </div>
           )}
@@ -675,7 +744,6 @@ export default function ConceptGraph() {
             style={{ width: '100%', height: '100%', display: 'block' }}
           />
 
-          {/* Zoom hint */}
           {!loading && nodes.length > 0 && (
             <div style={{
               position: 'absolute', bottom: 16, left: 16,
@@ -753,11 +821,7 @@ export default function ConceptGraph() {
                 >×</button>
               </div>
 
-              <div style={{
-                marginTop: 12,
-                display: 'flex',
-                gap: 12,
-              }}>
+              <div style={{ marginTop: 12, display: 'flex', gap: 12 }}>
                 <Stat label="chunks" value={selectedNode.chunk_count} />
               </div>
             </div>
