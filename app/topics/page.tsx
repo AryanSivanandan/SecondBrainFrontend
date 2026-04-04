@@ -83,10 +83,22 @@ async function getToken(): Promise<string> {
 
 async function apiFetch(path: string) {
   const token = await getToken()
+
+  if (!token) {
+    throw new Error('No auth token available')
+  }
+
   const res = await fetch(`${API}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
   })
-  if (!res.ok) throw new Error(`API ${path} → ${res.status}`)
+
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`API ${path} → ${res.status}: ${text}`)
+  }
+
   return res.json()
 }
 
