@@ -47,6 +47,7 @@ interface GraphNode extends d3.SimulationNodeDatum {
 
 interface GraphLink extends d3.SimulationLinkDatum<GraphNode> {
   similarity: number
+  type: "is_a" | "related_to"
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -341,7 +342,8 @@ export default function ConceptGraph() {
         .map((e: any) => ({
           source: e.source,
           target: e.target,
-          similarity: e.weight ?? 0.5,
+          type: e.type === "is_a" ? "is_a" : "related_to",
+          similarity: e.type === "related_to" ? (e.weight ?? 0.5) : 0.8
         }))
 
       setNodes(graphNodes)
@@ -366,35 +368,59 @@ export default function ConceptGraph() {
   }, [buildResult])
 
   // ── Build Graph handler ──────────────────────────────────────────────────────
-  const handleBuildGraph = useCallback(async () => {
-    setBuilding(true)
-    setBuildResult(null)
-    try {
-      const token = await getToken()
-      const res = await fetch(`${API}/concepts/build-graph`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        setBuildResult(`Failed: ${body.detail ?? res.status}`)
-        return
-      }
-      const result = await res.json()
-      const edgeCount = result.edges_created ?? result.edges ?? 0
-      setBuildResult(
-        result.status === 'not_enough_concepts'
-          ? 'Need at least 2 concepts — capture more pages first.'
-          : `Done — ${edgeCount} connection${edgeCount === 1 ? '' : 's'} built across ${result.concepts} concepts.`
-      )
-      // Reload graph so new edges appear immediately
-      await loadGraph()
-    } catch (e: any) {
-      setBuildResult(`Error: ${e.message}`)
-    } finally {
-      setBuilding(false)
+ const handleBuildGraph = useCallback(async () => {
+  setBuilding(true)
+  setBuildResult(null)
+
+  try {
+    const token = await getToken()
+
+    // STEP 1 — Build semantic edges
+    setBuildResult('Building relationships...')
+    const res1 = await fetch(`${API}/concepts/build-edges`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+
+    if (!res1.ok) {
+      const body = await res1.json().catch(() => ({}))
+      setBuildResult(`Edges failed: ${body.detail ?? res1.status}`)
+      return
     }
-  }, [loadGraph])
+
+    const result1 = await res1.json()
+    const edges = result1.edges_created ?? 0
+
+    // STEP 2 — Build hierarchy
+    setBuildResult('Building hierarchy...')
+    const res2 = await fetch(`${API}/concepts/build-hierarchy`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+
+    if (!res2.ok) {
+      const body = await res2.json().catch(() => ({}))
+      setBuildResult(`Hierarchy failed: ${body.detail ?? res2.status}`)
+      return
+    }
+
+    const result2 = await res2.json()
+    const hierarchyEdges = result2.edges_created ?? 0
+
+    // FINAL MESSAGE
+    setBuildResult(
+      `Done — ${edges} semantic edges + ${hierarchyEdges} hierarchy edges built`
+    )
+
+    // Reload graph
+    await loadGraph()
+
+  } catch (e: any) {
+    setBuildResult(`Error: ${e.message}`)
+  } finally {
+    setBuilding(false)
+  }
+}, [loadGraph])
 
   // ── Click concept → load chunks ─────────────────────────────────────────────
   const handleNodeClick = useCallback(async (node: GraphNode) => {
@@ -440,10 +466,15 @@ export default function ConceptGraph() {
     }
   }, [])
 
+  
   // ── D3 force graph ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (!svgRef.current || nodes.length === 0) return
-
+    
+    function getId(n: string | number | GraphNode): number {
+      if (typeof n === "object") return n.id
+      return typeof n === "string" ? Number(n) : n
+    }
     const svg = d3.select(svgRef.current)
     svg.selectAll('*').remove()
 
@@ -475,21 +506,91 @@ export default function ConceptGraph() {
       ? new Set(nodes.filter(n => n.name.toLowerCase().includes(search.toLowerCase())).map(n => n.id))
       : null
 
+    function computeLevels(nodes: GraphNode[], links: GraphLink[]) {
+      const parentMap = new Map<number, number[]>()
+
+      links.forEach(l => {
+        if (l.type === "is_a") {
+          const parent =
+            typeof l.source === "object" && l.source !== null
+              ? (l.source as GraphNode).id
+              : (l.source as number)
+
+          const child =
+            typeof l.target === "object" && l.target !== null
+              ? (l.target as GraphNode).id
+              : (l.target as number)
+
+          if (!parentMap.has(child)) parentMap.set(child, [])
+          parentMap.get(child)!.push(parent)
+        }
+      })
+
+      const memo = new Map<number, number>()
+
+      
+      function dfs(nodeId: number, visited = new Set<number>()): number {
+        if (memo.has(nodeId)) return memo.get(nodeId)!
+
+        // 🔥 break cycles
+        if (visited.has(nodeId)) return 0
+
+        visited.add(nodeId)
+
+        if (!parentMap.has(nodeId)) {
+          memo.set(nodeId, 0)
+          return 0
+        }
+
+        const val = 1 + Math.max(
+          ...parentMap.get(nodeId)!.map(n => dfs(n, new Set(visited)))
+        )
+
+        memo.set(nodeId, val)
+        return val
+      }
+
+      const levelMap = new Map<number, number>()
+
+        nodes.forEach(n => {
+          levelMap.set(n.id, dfs(n.id))
+        })
+
+      return levelMap
+    }
+
+    const levels = computeLevels(nodes, links)
+
+    const maxLevel = Math.max(...levels.values(), 0)
+
     const sim = d3.forceSimulation<GraphNode>(nodes)
       .force('link', d3.forceLink<GraphNode, GraphLink>(links)
         .id(d => d.id)
-        .distance(d => 120 - d.similarity * 60)
-        .strength(d => d.similarity * 0.6))
+        .distance(d => d.type === "is_a" ? 60 : 120 - d.similarity * 60)
+        .strength(d => d.type === "is_a" ? 0.9 : d.similarity * 0.6))
       .force('charge', d3.forceManyBody().strength(-280))
       .force('center', d3.forceCenter(W / 2, H / 2))
       .force('collision', d3.forceCollide<GraphNode>().radius(d => d.radius + 14))
+      .force('y', d3.forceY<GraphNode>(d => {
+            const level = levels.get(d.id) ?? 0
+            return (level / (maxLevel + 1)) * H
+          }).strength(0.6))
 
     const link = g.append('g').selectAll('line')
       .data(links)
       .join('line')
-      .attr('stroke', d => d.similarity > 0.75 ? COLORS.linkBright : COLORS.link)
-      .attr('stroke-width', d => Math.max(0.5, d.similarity * 2))
-      .attr('stroke-opacity', d => 0.3 + d.similarity * 0.4)
+      .attr('stroke', d =>
+        d.type === "is_a" ? COLORS.accent : COLORS.link
+      )
+      .attr('stroke-width', d =>
+        d.type === "is_a" ? 2.5 : Math.max(0.5, d.similarity * 2)
+      )
+      .attr('stroke-dasharray', d =>
+        d.type === "related_to" ? "3,3" : "0"
+      )
+      .attr('stroke-opacity', d =>
+        d.type === "is_a" ? 0.9 : 0.4
+  )
 
     const node = g.append('g').selectAll<SVGGElement, GraphNode>('g')
       .data(nodes)
@@ -510,6 +611,30 @@ export default function ConceptGraph() {
       .on('click', (event: any, d: GraphNode) => {
         event.stopPropagation()
         handleNodeClick(d)
+      })
+      .on('mouseover', (_, d) => {
+        const connected = new Set<number>()
+
+        links.forEach(l => {
+          const s = getId(l.source)
+          const t = getId(l.target)
+
+          if (s === d.id || t === d.id) {
+            connected.add(s)
+            connected.add(t)
+          }
+        })
+
+        node.attr('opacity', n => connected.has(n.id) ? 1 : 0.1)
+        link.attr('opacity', l => {
+          const s = getId(l.source)
+          const t = getId(l.target)
+          return (s === d.id || t === d.id) ? 1 : 0.05
+        })
+      })
+      .on('mouseout', () => {
+        node.attr('opacity', 1)
+        link.attr('opacity', d => d.type === "is_a" ? 0.9 : 0.4)
       })
 
     node.append('circle')
