@@ -567,14 +567,15 @@ export default function ConceptGraph() {
       .force('link', d3.forceLink<GraphNode, GraphLink>(links)
         .id(d => d.id)
         .distance(d => d.type === "is_a" ? 60 : 120 - d.similarity * 60)
-        .strength(d => d.type === "is_a" ? 0.9 : d.similarity * 0.6))
-      .force('charge', d3.forceManyBody().strength(-280))
+        .strength(d => d.type === "is_a" ? 0.9 : Math.max(0.2, d.similarity * 0.9)))
+      .force('charge', d3.forceManyBody().strength(-180))
       .force('center', d3.forceCenter(W / 2, H / 2))
       .force('collision', d3.forceCollide<GraphNode>().radius(d => d.radius + 14))
+      .force('x', d3.forceX(W / 2).strength(0.05))
       .force('y', d3.forceY<GraphNode>(d => {
             const level = levels.get(d.id) ?? 0
             return (level / (maxLevel + 1)) * H
-          }).strength(0.6))
+          }).strength(0.2))
 
     const link = g.append('g').selectAll('line')
       .data(links)
@@ -589,7 +590,7 @@ export default function ConceptGraph() {
         d.type === "related_to" ? "3,3" : "0"
       )
       .attr('stroke-opacity', d =>
-        d.type === "is_a" ? 0.9 : 0.4
+        d.type === "is_a" ? 1 : 0.25
   )
 
     const node = g.append('g').selectAll<SVGGElement, GraphNode>('g')
