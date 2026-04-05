@@ -48,6 +48,7 @@ interface GraphNode extends d3.SimulationNodeDatum {
 interface GraphLink extends d3.SimulationLinkDatum<GraphNode> {
   similarity: number
   type: "is_a" | "related_to"
+  label?: string
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -343,7 +344,8 @@ export default function ConceptGraph() {
           source: e.source,
           target: e.target,
           type: e.type === "is_a" ? "is_a" : "related_to",
-          similarity: e.type === "related_to" ? (e.weight ?? 0.5) : 0.8
+          similarity: e.type === "related_to" ? (e.weight ?? 0.5) : 0.8,
+          label: e.label || (e.type === "is_a" ? "is a" : "related")
         }))
 
       setNodes(graphNodes)
@@ -391,26 +393,7 @@ export default function ConceptGraph() {
     const result1 = await res1.json()
     const edges = result1.edges_created ?? 0
 
-    // STEP 2 — Build hierarchy
-    setBuildResult('Building hierarchy...')
-    const res2 = await fetch(`${API}/concepts/build-hierarchy`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-    })
-
-    if (!res2.ok) {
-      const body = await res2.json().catch(() => ({}))
-      setBuildResult(`Hierarchy failed: ${body.detail ?? res2.status}`)
-      return
-    }
-
-    const result2 = await res2.json()
-    const hierarchyEdges = result2.edges_created ?? 0
-
-    // FINAL MESSAGE
-    setBuildResult(
-      `Done — ${edges} semantic edges + ${hierarchyEdges} hierarchy edges built`
-    )
+    setBuildResult(`Done — ${edges} relationships built`)
 
     // Reload graph
     await loadGraph()
@@ -613,6 +596,17 @@ export default function ConceptGraph() {
         d.type === "is_a" ? 0.9 : 0.6
       )
 
+      const linkLabels = g.append('g')
+        .selectAll('text')
+        .data(links)
+        .join('text')
+        .text(d => d.label || (d.type === "is_a" ? "is a" : "related"))
+        .attr('font-size', 10)
+        .attr('fill', COLORS.textMuted)
+        .attr('text-anchor', 'middle')
+        .attr('pointer-events', 'none')
+        .attr('opacity', 0.7)
+
     const node = g.append('g').selectAll<SVGGElement, GraphNode>('g')
       .data(nodes)
       .join('g')
@@ -716,6 +710,9 @@ export default function ConceptGraph() {
         .attr('y1', d => (d.source as GraphNode).y!)
         .attr('x2', d => (d.target as GraphNode).x!)
         .attr('y2', d => (d.target as GraphNode).y!)
+      linkLabels
+        .attr('x', d => ((d.source as GraphNode).x! + (d.target as GraphNode).x!) / 2)
+        .attr('y', d => ((d.source as GraphNode).y! + (d.target as GraphNode).y!) / 2)
 
       node.attr('transform', d => `translate(${d.x},${d.y})`)
     })
