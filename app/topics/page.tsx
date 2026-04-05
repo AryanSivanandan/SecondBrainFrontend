@@ -577,9 +577,9 @@ export default function ConceptGraph() {
     const sim = d3.forceSimulation<GraphNode>(nodes)
       .force('link', d3.forceLink<GraphNode, GraphLink>(links)
         .id(d => d.id)
-        .distance(d => d.type === "is_a" ? 60 : 120 - d.similarity * 60)
-        .strength(d => d.type === "is_a" ? 0.9 : Math.max(0.2, d.similarity * 0.9)))
-      .force('charge', d3.forceManyBody().strength(-180))
+        .distance(d => d.type === "is_a" ? 90 : 160 - d.similarity * 80)
+        .strength(d => d.type === "is_a" ? 0.6 : Math.max(0.15, d.similarity * 0.6)))
+      .force('charge', d3.forceManyBody().strength(-140))
       .force('center', d3.forceCenter(W / 2, H / 2))
       .force('collision', d3.forceCollide<GraphNode>().radius(d => d.radius + 14))
       .force('x', d3.forceX(W / 2).strength(0.05))
@@ -620,7 +620,7 @@ export default function ConceptGraph() {
       .call(
         d3.drag<SVGGElement, GraphNode>()
           .on('start', (event: any, d: GraphNode) => {
-            if (!event.active) sim.alphaTarget(0.3).restart()
+            if (!event.active) sim.alphaTarget(0.1).restart()
             d.fx = d.x; d.fy = d.y
           })
           .on('drag', (event: any, d: GraphNode) => { d.fx = event.x; d.fy = event.y })
@@ -692,7 +692,7 @@ export default function ConceptGraph() {
     node.append('text')
       .text(d => d.name.length > 18 ? d.name.slice(0, 16) + '…' : d.name)
       .attr('text-anchor', 'middle')
-      .attr('dy', d => d.radius + 14)
+      .attr('dy', d => d.radius + 24)
       .attr('fill', d => activeIds ? (activeIds.has(d.id) ? COLORS.text : COLORS.textDim) : COLORS.textMuted)
       .attr('font-size', d => Math.max(10, Math.min(13, 9 + d.radius * 0.18)))
       .attr('font-family', 'system-ui, sans-serif')
