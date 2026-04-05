@@ -506,62 +506,73 @@ export default function ConceptGraph() {
       ? new Set(nodes.filter(n => n.name.toLowerCase().includes(search.toLowerCase())).map(n => n.id))
       : null
 
+    // ── Compute hierarchy depth levels for the forceY layout ──────────────────
+    // Uses iterative Kahn's-algorithm BFS (topological level assignment) instead
+    // of recursive DFS so it:
+    //   1. Handles cycles safely (nodes in a cycle stay at level 0).
+    //   2. Produces a consistent result regardless of traversal order.
+    //   3. Avoids the stale-memo bug where a memoised value from one traversal's
+    //      partial `visited` set was reused incorrectly in a later traversal.
     function computeLevels(nodes: GraphNode[], links: GraphLink[]) {
-      const parentMap = new Map<number, number[]>()
+      // Build parent→children adjacency from "is_a" edges only.
+      // In our schema: parent_id -> child_id means child "is_a" parent,
+      // so the parent sits one level above the child in the hierarchy.
+      const children = new Map<number, number[]>()  // parent → [children]
+      const inDegree  = new Map<number, number>()    // child  → # parents
+
+      nodes.forEach(n => {
+        children.set(n.id, [])
+        inDegree.set(n.id, 0)
+      })
 
       links.forEach(l => {
-        if (l.type === "is_a") {
-          const parent =
-            typeof l.source === "object" && l.source !== null
-              ? (l.source as GraphNode).id
-              : (l.source as number)
+        if (l.type !== "is_a") return
+        const parentId = typeof l.source === "object" ? (l.source as GraphNode).id : (l.source as number)
+        const childId  = typeof l.target === "object" ? (l.target as GraphNode).id : (l.target as number)
+        children.get(parentId)?.push(childId)
+        inDegree.set(childId, (inDegree.get(childId) ?? 0) + 1)
+      })
 
-          const child =
-            typeof l.target === "object" && l.target !== null
-              ? (l.target as GraphNode).id
-              : (l.target as number)
+      // Level 0 = roots (no parents in the is_a graph).
+      const levelMap = new Map<number, number>()
+      const queue: number[] = []
 
-          if (!parentMap.has(child)) parentMap.set(child, [])
-          parentMap.get(child)!.push(parent)
+      nodes.forEach(n => {
+        if ((inDegree.get(n.id) ?? 0) === 0) {
+          levelMap.set(n.id, 0)
+          queue.push(n.id)
         }
       })
 
-      const memo = new Map<number, number>()
-
-      
-      function dfs(nodeId: number, visited = new Set<number>()): number {
-        if (memo.has(nodeId)) return memo.get(nodeId)!
-
-        // 🔥 break cycles
-        if (visited.has(nodeId)) return 0
-
-        visited.add(nodeId)
-
-        if (!parentMap.has(nodeId)) {
-          memo.set(nodeId, 0)
-          return 0
+      // BFS: each child's level = parent's level + 1.
+      while (queue.length > 0) {
+        const current = queue.shift()!
+        const currentLevel = levelMap.get(current) ?? 0
+        for (const child of (children.get(current) ?? [])) {
+          const existing = levelMap.get(child) ?? 0
+          const newLevel = currentLevel + 1
+          if (newLevel > existing) {
+            levelMap.set(child, newLevel)
+          }
+          // Only enqueue if all parents have been processed (inDegree reaches 0).
+          inDegree.set(child, (inDegree.get(child) ?? 1) - 1)
+          if ((inDegree.get(child) ?? 0) === 0) {
+            queue.push(child)
+          }
         }
-
-        const val = 1 + Math.max(
-          ...parentMap.get(nodeId)!.map(n => dfs(n, new Set(visited)))
-        )
-
-        memo.set(nodeId, val)
-        return val
       }
 
-      const levelMap = new Map<number, number>()
-
-        nodes.forEach(n => {
-          levelMap.set(n.id, dfs(n.id))
-        })
+      // Any node not reached by BFS is part of a cycle — keep at level 0.
+      nodes.forEach(n => {
+        if (!levelMap.has(n.id)) levelMap.set(n.id, 0)
+      })
 
       return levelMap
     }
 
     const levels = computeLevels(nodes, links)
-
-    const maxLevel = Math.max(...levels.values(), 0)
+    const hasHierarchy = links.some(l => l.type === "is_a")
+    const maxLevel = hasHierarchy ? Math.max(...levels.values(), 0) : 0
 
     const sim = d3.forceSimulation<GraphNode>(nodes)
       .force('link', d3.forceLink<GraphNode, GraphLink>(links)
@@ -572,10 +583,17 @@ export default function ConceptGraph() {
       .force('center', d3.forceCenter(W / 2, H / 2))
       .force('collision', d3.forceCollide<GraphNode>().radius(d => d.radius + 14))
       .force('x', d3.forceX(W / 2).strength(0.05))
-      .force('y', d3.forceY<GraphNode>(d => {
+      // forceY: only apply hierarchy positioning when is_a edges actually exist.
+      // Without this guard, all nodes get pulled to y=0 (level 0 maps to top)
+      // when there are no hierarchy edges, making isolated clusters pile up.
+      .force('y', hasHierarchy
+        ? d3.forceY<GraphNode>(d => {
             const level = levels.get(d.id) ?? 0
-            return (level / (maxLevel + 1)) * H
-          }).strength(0.2))
+            // Invert: roots (level 0) at top, deepest children at bottom.
+            return H * 0.1 + (level / Math.max(maxLevel, 1)) * H * 0.8
+          }).strength(0.25)
+        : d3.forceY(H / 2).strength(0.02)
+      )
 
     const link = g.append('g').selectAll('line')
       .data(links)
