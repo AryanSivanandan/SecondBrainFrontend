@@ -598,18 +598,20 @@ export default function ConceptGraph() {
     const link = g.append('g').selectAll('line')
       .data(links)
       .join('line')
+      // is_a → solid accent line; related_to → dashed, brighter so it's actually visible
       .attr('stroke', d =>
-        d.type === "is_a" ? COLORS.accent : COLORS.link
+        d.type === "is_a" ? COLORS.accent : COLORS.linkBright
       )
       .attr('stroke-width', d =>
-        d.type === "is_a" ? 2.5 : Math.max(0.5, d.similarity * 2)
+        d.type === "is_a" ? 2.5 : Math.max(1, d.similarity * 2.5)
       )
       .attr('stroke-dasharray', d =>
-        d.type === "related_to" ? "3,3" : "0"
+        d.type === "related_to" ? "4,4" : "0"
       )
+      // was 0.25 for related_to — invisible against the dark background
       .attr('stroke-opacity', d =>
-        d.type === "is_a" ? 1 : 0.25
-  )
+        d.type === "is_a" ? 0.9 : 0.6
+      )
 
     const node = g.append('g').selectAll<SVGGElement, GraphNode>('g')
       .data(nodes)
@@ -637,23 +639,32 @@ export default function ConceptGraph() {
         links.forEach(l => {
           const s = getId(l.source)
           const t = getId(l.target)
-
           if (s === d.id || t === d.id) {
             connected.add(s)
             connected.add(t)
           }
         })
 
-        node.attr('opacity', n => connected.has(n.id) ? 1 : 0.1)
+        // Always include the hovered node itself so it stays fully visible.
+        connected.add(d.id)
+
+        const hasConnections = connected.size > 1
+
+        // If the node has no edges, don't grey anything out — just highlight it.
+        node.attr('opacity', n => {
+          if (!hasConnections) return 1
+          return connected.has(n.id) ? 1 : 0.15
+        })
         link.attr('opacity', l => {
+          if (!hasConnections) return l.type === "is_a" ? 0.9 : 0.6
           const s = getId(l.source)
           const t = getId(l.target)
-          return (s === d.id || t === d.id) ? 1 : 0.05
+          return (s === d.id || t === d.id) ? 1 : 0.04
         })
       })
       .on('mouseout', () => {
         node.attr('opacity', 1)
-        link.attr('opacity', d => d.type === "is_a" ? 0.9 : 0.4)
+        link.attr('opacity', (d: GraphLink) => d.type === "is_a" ? 0.9 : 0.6)
       })
 
     node.append('circle')
