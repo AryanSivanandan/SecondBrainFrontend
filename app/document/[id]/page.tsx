@@ -67,6 +67,13 @@ const IconExternal = () => (
   </svg>
 );
 
+const IconCopy = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+  </svg>
+);
+
 // ── Document page ──────────────────────────────────────────── //
 export default function DocumentPage() {
   const params = useParams();
@@ -82,6 +89,7 @@ export default function DocumentPage() {
   const [noteSaved, setNoteSaved]       = useState(false);
   const [loading, setLoading]           = useState(true);
   const [showContent, setShowContent]   = useState(false);
+  const [copied, setCopied]             = useState(false);
   const [chatMode, setChatMode]         = useState(false);
   const [messages, setMessages]         = useState<Message[]>([]);
   const [chatInput, setChatInput]       = useState("");
@@ -313,16 +321,29 @@ export default function DocumentPage() {
 
         {/* Full content toggle */}
         <div style={{ marginBottom: "28px" }}>
-          <button
-            className="btn btn-ghost"
-            onClick={() => setShowContent(!showContent)}
-            style={{ padding: "6px 14px", fontSize: "12.5px" }}
-          >
-            {showContent ? "↑ Hide content" : "↓ Show full content"}
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <button
+              className="btn btn-ghost"
+              onClick={() => setShowContent(!showContent)}
+              style={{ padding: "6px 14px", fontSize: "12.5px" }}
+            >
+              {showContent ? "↑ Hide content" : "↓ Show full content"}
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                navigator.clipboard.writeText(window.location.href);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+              }}
+              style={{ padding: "6px 12px", fontSize: "12.5px", gap: "5px", color: copied ? "var(--green)" : undefined }}
+            >
+              <IconCopy />{copied ? "Copied!" : "Copy URL"}
+            </button>
+          </div>
           {showContent && doc.content && (
-            <div className="card fade-up" style={{ marginTop: "12px", padding: "24px 26px", maxHeight: "560px", overflowY: "auto" }}>
-              <p style={{ fontSize: "14.5px", color: "var(--text-2)", lineHeight: 1.9, whiteSpace: "pre-wrap", margin: 0 }}>{doc.content}</p>
+            <div className="card fade-up md" style={{ marginTop: "12px", padding: "24px 26px", maxHeight: "560px", overflowY: "auto", fontSize: "14.5px", color: "var(--text-2)", lineHeight: 1.9 }}>
+              <ReactMarkdown>{doc.content}</ReactMarkdown>
             </div>
           )}
         </div>

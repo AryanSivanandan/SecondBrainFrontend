@@ -11,6 +11,7 @@ type Result = { chunk: string; document_id: number; chunk_id?: number; score: nu
 type Doc    = { id: number; title: string; url: string; excerpt: string; captured_at: string; word_count: number; user_note?: string; };
 type Reminder      = { document_id: number; title: string; url: string; reason: string; captured_at: string; };
 type Recommendation = { topic: string; reason: string; };
+type Gap = { topic_a: string; topic_b: string; similarity: number; suggestion: string; };
 
 const BACKEND = "/api";
 
@@ -204,9 +205,17 @@ function Dashboard({ session }: { session: any }) {
   const [documents, setDocuments]       = useState<Doc[]>([]);
   const [reminders, setReminders]       = useState<Reminder[]>([]);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
+  const [gaps, setGaps]                 = useState<Gap[]>([]);
   const [loading, setLoading]           = useState(false);
   const [feedLoading, setFeedLoading]   = useState(true);
+  const [discoverLoading, setDiscoverLoading] = useState(false);
   const [mode, setMode]                 = useState<"feed" | "search">("feed");
+  const [tab, setTab]                   = useState<"feed" | "discover">(() => {
+    if (typeof window !== "undefined") {
+      return (localStorage.getItem("sb_home_tab") as "feed" | "discover") ?? "feed";
+    }
+    return "feed";
+  });
   const [pdfUploading, setPdfUploading] = useState(false);
   const [pdfStatus, setPdfStatus]       = useState<string | null>(null);
   const inputRef    = useRef<HTMLInputElement>(null);
@@ -253,19 +262,38 @@ function Dashboard({ session }: { session: any }) {
 
   const loadFeed = useCallback(async () => {
     try {
-      const [docsRes, remsRes, recsRes] = await Promise.all([
-        authFetch(`${BACKEND}/documents?limit=20`).then(r => r.json()),
-        authFetch(`${BACKEND}/reminders`).then(r => r.json()),
-        authFetch(`${BACKEND}/recommendations`).then(r => r.json()).catch(() => []),
-      ]);
+      const docsRes = await authFetch(`${BACKEND}/documents?limit=20`).then(r => r.json());
       setDocuments(Array.isArray(docsRes) ? docsRes : []);
-      setReminders(Array.isArray(remsRes) ? remsRes : []);
-      setRecommendations(Array.isArray(recsRes) ? recsRes : []);
     } catch (e) { console.error(e); }
     finally { setFeedLoading(false); }
   }, []);
 
+  const loadDiscover = useCallback(async () => {
+    setDiscoverLoading(true);
+    try {
+      const [remsRes, recsRes, gapsRes] = await Promise.all([
+        authFetch(`${BACKEND}/reminders`).then(r => r.json()).catch(() => []),
+        authFetch(`${BACKEND}/recommendations`).then(r => r.json()).catch(() => []),
+        authFetch(`${BACKEND}/topics/gaps`).then(r => r.json()).catch(() => []),
+      ]);
+      setReminders(Array.isArray(remsRes) ? remsRes : []);
+      setRecommendations(Array.isArray(recsRes) ? recsRes : []);
+      setGaps(Array.isArray(gapsRes) ? gapsRes : []);
+    } catch (e) { console.error(e); }
+    finally { setDiscoverLoading(false); }
+  }, []);
+
   useEffect(() => { loadFeed(); }, [loadFeed]);
+
+  // Lazy-load Discover data only when the tab is first visited
+  const discoverLoadedRef = useRef(false);
+  useEffect(() => {
+    if (tab === "discover" && !discoverLoadedRef.current) {
+      discoverLoadedRef.current = true;
+      loadDiscover();
+    }
+    localStorage.setItem("sb_home_tab", tab);
+  }, [tab, loadDiscover]);
 
   // Poll every 30 s in feed mode to surface new captures without a page refresh
   useEffect(() => {
@@ -301,7 +329,6 @@ function Dashboard({ session }: { session: any }) {
 
   const clearSearch = () => {
     setQuery(""); setMode("feed"); setAnswer(""); setResults([]);
-    loadFeed();
     inputRef.current?.focus();
   };
 
@@ -435,23 +462,135 @@ function Dashboard({ session }: { session: any }) {
             </div>
           )}
 
-          {/* ── Feed ────────────────────────────────── */}
+          {/* ── Tab bar ─────────────────────────────── */}
           {mode === "feed" && (
+            <div style={{ display: "flex", gap: "4px", marginBottom: "28px", borderBottom: "1px solid var(--border)", paddingBottom: "0" }}>
+              {(["feed", "discover"] as const).map(t => (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  style={{
+                    background: "none", border: "none", padding: "8px 14px",
+                    fontSize: "13.5px", fontWeight: 500, cursor: "pointer",
+                    color: tab === t ? "var(--text-1)" : "var(--text-3)",
+                    borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent",
+                    marginBottom: "-1px", transition: "color var(--t), border-color var(--t)",
+                  }}
+                >
+                  {t === "feed" ? "Feed" : "Discover"}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* ── Feed tab ─────────────────────────────── */}
+          {mode === "feed" && tab === "feed" && (
             <div>
               {feedLoading ? (
                 <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "var(--text-2)", fontSize: "14px" }}>
                   <div className="spinner" /><span>Loading your library...</span>
                 </div>
               ) : (
+                <div className="section">
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                    <div className="section-label" style={{ margin: 0 }}>Library · {documents.length}</div>
+                    <button onClick={loadFeed} title="Refresh" style={{ background: "none", border: "none", color: "var(--text-3)", fontSize: "17px", lineHeight: 1, cursor: "pointer", padding: "2px 4px", transition: "color var(--t)" }}
+                      onMouseOver={e => e.currentTarget.style.color = "var(--text-2)"}
+                      onMouseOut={e => e.currentTarget.style.color = "var(--text-3)"}>↺</button>
+                  </div>
+                  {documents.length === 0 ? (
+                    <div className="empty-state">
+                      <p>Nothing captured yet.<br />
+                        <span style={{ fontSize: "12px", color: "var(--text-3)" }}>Use Ctrl+Shift+9 in the extension to save a page.</span>
+                      </p>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      {documents.map(doc => (
+                        <Link key={doc.id} href={`/document/${doc.id}`}>
+                          <div className="card card-link" style={{ padding: "14px 18px" }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "14px", marginBottom: doc.excerpt ? "6px" : 0 }}>
+                              <p style={{ fontSize: "14px", fontWeight: 500, margin: 0, color: "var(--text-1)", lineHeight: 1.4, flex: 1 }}>{doc.title || "Untitled"}</p>
+                              <span style={{ fontSize: "11px", color: "var(--text-3)", whiteSpace: "nowrap", flexShrink: 0, paddingTop: "2px" }}>{timeAgo(doc.captured_at)}</span>
+                            </div>
+                            {doc.excerpt && (
+                              <p style={{ fontSize: "13px", color: "var(--text-2)", margin: "0 0 8px", lineHeight: 1.55 }}>
+                                {doc.excerpt.slice(0, 200)}{doc.excerpt.length > 200 ? "…" : ""}
+                              </p>
+                            )}
+                            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                              {doc.url && <span style={{ fontSize: "11px", color: "var(--text-3)" }}>{hostname(doc.url)}</span>}
+                              {doc.user_note && <span className="badge badge-accent" style={{ fontSize: "10px", padding: "1px 7px" }}>note</span>}
+                            </div>
+                          </div>
+                        </Link>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Discover tab ─────────────────────────── */}
+          {mode === "feed" && tab === "discover" && (
+            <div>
+              {discoverLoading ? (
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "var(--text-2)", fontSize: "14px" }}>
+                  <div className="spinner" /><span>Loading discoveries...</span>
+                </div>
+              ) : (
                 <>
-                  {/* Reminders — resurface stale captures */}
+                  {/* Section 1 — Knowledge Gaps */}
+                  {gaps.length > 0 && (
+                    <div className="section">
+                      <div className="section-label">Knowledge Gaps</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                        {gaps.map((g, i) => (
+                          <div key={i} className="card" style={{ padding: "16px 18px", borderLeft: "4px solid var(--accent)", background: "var(--surface)" }}>
+                            <div style={{ display: "flex", gap: "12px", marginBottom: "10px" }}>
+                              <div style={{ flex: 1, padding: "8px 12px", background: "var(--accent-dim)", borderRadius: "var(--radius-sm)", fontSize: "13px", fontWeight: 500, color: "var(--accent)", textAlign: "center" }}>{g.topic_a}</div>
+                              <div style={{ display: "flex", alignItems: "center", color: "var(--text-3)", fontSize: "16px" }}>- - -</div>
+                              <div style={{ flex: 1, padding: "8px 12px", background: "var(--accent-dim)", borderRadius: "var(--radius-sm)", fontSize: "13px", fontWeight: 500, color: "var(--accent)", textAlign: "center" }}>{g.topic_b}</div>
+                            </div>
+                            <p style={{ fontSize: "13px", color: "var(--text-2)", margin: 0, lineHeight: 1.55 }}>{g.suggestion}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Section 2 — Topics to Explore */}
+                  {recommendations.length > 0 && (
+                    <div className="section">
+                      <div className="section-label">Topics to Explore</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
+                        {recommendations.map((r, i) => (
+                          <div key={i} className="card" style={{ padding: "14px 18px", borderLeft: "4px solid #3b82f6", background: "var(--surface)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px" }}>
+                            <div style={{ display: "flex", alignItems: "flex-start", gap: "10px", flex: 1 }}>
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: "2px" }}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                              <div>
+                                <p style={{ fontSize: "13.5px", fontWeight: 500, margin: "0 0 3px", color: "var(--text-1)" }}>{r.topic}</p>
+                                <p style={{ fontSize: "12.5px", color: "var(--text-2)", margin: 0, lineHeight: 1.5 }}>{r.reason}</p>
+                              </div>
+                            </div>
+                            <a href={`https://www.google.com/search?q=${encodeURIComponent(r.topic)}`} target="_blank" rel="noopener noreferrer" className="btn btn-ghost" style={{ flexShrink: 0, fontSize: "12px", padding: "5px 12px" }}>
+                              Find pages →
+                            </a>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Section 3 — Resurface */}
                   {reminders.length > 0 && (
                     <div className="section">
                       <div className="section-label">Resurface</div>
                       <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
                         {reminders.map(r => (
                           <Link key={r.document_id} href={`/document/${r.document_id}`}>
-                            <div className="card card-hover" style={{ padding: "14px 18px", borderColor: "var(--amber-border)", background: "var(--amber-dim)" }}>
+                            <div className="card card-hover" style={{ padding: "14px 18px", borderLeft: "4px solid var(--amber)", background: "var(--surface)" }}>
                               <p style={{ fontSize: "13.5px", fontWeight: 500, margin: "0 0 4px", color: "var(--amber)" }}>{r.title}</p>
                               <p style={{ fontSize: "12.5px", color: "var(--text-2)", margin: 0, lineHeight: 1.5 }}>{r.reason}</p>
                             </div>
@@ -461,65 +600,13 @@ function Dashboard({ session }: { session: any }) {
                     </div>
                   )}
 
-                  {/* Recommendations — knowledge gaps detected from low-result queries */}
-                  {recommendations.length > 0 && (
-                    <div className="section">
-                      <div className="section-label">Knowledge gaps</div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
-                        {recommendations.map((r, i) => (
-                          <div key={i} className="card" style={{ padding: "14px 18px", borderColor: "var(--accent-border)", background: "var(--accent-dim)" }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
-                              <div>
-                                <p style={{ fontSize: "13.5px", fontWeight: 500, margin: "0 0 3px", color: "var(--accent)" }}>{r.topic}</p>
-                                <p style={{ fontSize: "12.5px", color: "var(--text-2)", margin: 0, lineHeight: 1.5 }}>{r.reason}</p>
-                              </div>
-                              <span className="badge badge-accent" style={{ flexShrink: 0, marginTop: "2px" }}>capture</span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
+                  {gaps.length === 0 && recommendations.length === 0 && reminders.length === 0 && (
+                    <div className="empty-state">
+                      <p>Nothing to discover yet.<br />
+                        <span style={{ fontSize: "12px", color: "var(--text-3)" }}>Capture more pages and ask questions to surface insights.</span>
+                      </p>
                     </div>
                   )}
-
-                  {/* Library — recent captures */}
-                  <div className="section">
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-                      <div className="section-label" style={{ margin: 0 }}>Library · {documents.length}</div>
-                      <button onClick={loadFeed} title="Refresh" style={{ background: "none", border: "none", color: "var(--text-3)", fontSize: "17px", lineHeight: 1, cursor: "pointer", padding: "2px 4px", transition: "color var(--t)" }}
-                        onMouseOver={e => e.currentTarget.style.color = "var(--text-2)"}
-                        onMouseOut={e => e.currentTarget.style.color = "var(--text-3)"}>↺</button>
-                    </div>
-
-                    {documents.length === 0 ? (
-                      <div className="empty-state">
-                        <p>Nothing captured yet.<br />
-                          <span style={{ fontSize: "12px", color: "var(--text-3)" }}>Use Ctrl+Shift+9 in the extension to save a page.</span>
-                        </p>
-                      </div>
-                    ) : (
-                      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                        {documents.map(doc => (
-                          <Link key={doc.id} href={`/document/${doc.id}`}>
-                            <div className="card card-link" style={{ padding: "14px 18px" }}>
-                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "14px", marginBottom: doc.excerpt ? "6px" : 0 }}>
-                                <p style={{ fontSize: "14px", fontWeight: 500, margin: 0, color: "var(--text-1)", lineHeight: 1.4, flex: 1 }}>{doc.title || "Untitled"}</p>
-                                <span style={{ fontSize: "11px", color: "var(--text-3)", whiteSpace: "nowrap", flexShrink: 0, paddingTop: "2px" }}>{timeAgo(doc.captured_at)}</span>
-                              </div>
-                              {doc.excerpt && (
-                                <p style={{ fontSize: "13px", color: "var(--text-2)", margin: "0 0 8px", lineHeight: 1.55 }}>
-                                  {doc.excerpt.slice(0, 200)}{doc.excerpt.length > 200 ? "…" : ""}
-                                </p>
-                              )}
-                              <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-                                {doc.url && <span style={{ fontSize: "11px", color: "var(--text-3)" }}>{hostname(doc.url)}</span>}
-                                {doc.user_note && <span className="badge badge-accent" style={{ fontSize: "10px", padding: "1px 7px" }}>note</span>}
-                              </div>
-                            </div>
-                          </Link>
-                        ))}
-                      </div>
-                    )}
-                  </div>
                 </>
               )}
             </div>
