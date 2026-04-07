@@ -100,6 +100,13 @@ export default function TopicsPage() {
   const [hoveredId,    setHoveredId]    = useState<string | null>(null)
   const [dims,         setDims]         = useState({ w: 0, h: 0 })
 
+  // Export briefing modal
+  const [briefing,        setBriefing]        = useState<string>('')
+  const [briefingMeta,    setBriefingMeta]    = useState<{ chunk_count: number; source_breakdown: Record<string, number> } | null>(null)
+  const [briefingLoading, setBriefingLoading] = useState(false)
+  const [showBriefing,    setShowBriefing]    = useState(false)
+  const [briefingCopied,  setBriefingCopied]  = useState(false)
+
   // Track window dimensions
   useEffect(() => {
     const update = () => setDims({ w: window.innerWidth, h: window.innerHeight })
@@ -331,6 +338,23 @@ export default function TopicsPage() {
   const handleNodeHover = useCallback((node: any) => {
     setHoveredId(node ? (node as ConceptNode).id : null)
   }, [])
+
+  const handleExport = useCallback(async () => {
+    if (!selectedNode) return
+    setBriefingLoading(true)
+    setShowBriefing(true)
+    setBriefing('')
+    setBriefingMeta(null)
+    try {
+      const data = await authFetch(`/concepts/${selectedNode.numId}/export`, { method: 'POST' })
+      setBriefing(data.briefing || '')
+      setBriefingMeta({ chunk_count: data.chunk_count, source_breakdown: data.source_breakdown || {} })
+    } catch {
+      setBriefing('Failed to generate briefing. Please try again.')
+    } finally {
+      setBriefingLoading(false)
+    }
+  }, [selectedNode])
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
@@ -579,6 +603,127 @@ export default function TopicsPage() {
             {!panelLoading && panelDocs.length === 0 && (
               <p style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.2)', margin: 0 }}>No documents found for this concept.</p>
             )}
+
+            {/* Export Briefing button */}
+            <button
+              onClick={handleExport}
+              disabled={briefingLoading}
+              style={{
+                marginTop: 20, width: '100%',
+                padding: '9px 0',
+                background: briefingLoading ? 'rgba(168,155,255,0.08)' : 'rgba(168,155,255,0.12)',
+                border: `1px solid ${selectedColor}44`,
+                borderRadius: 9,
+                color: briefingLoading ? 'rgba(168,155,255,0.4)' : '#a89bff',
+                fontSize: 12, fontWeight: 500,
+                cursor: briefingLoading ? 'not-allowed' : 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+                transition: 'all 0.15s',
+              }}
+            >
+              {briefingLoading
+                ? <><div style={{ width: 11, height: 11, border: '2px solid rgba(168,155,255,0.3)', borderTopColor: '#a89bff', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />Generating…</>
+                : '⬡ Export Briefing'
+              }
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Export Briefing modal ─────────────────────────────────────── */}
+      {showBriefing && (
+        <div
+          onClick={() => setShowBriefing(false)}
+          style={{
+            position: 'fixed', inset: 0,
+            background: 'rgba(0,0,0,0.6)',
+            backdropFilter: 'blur(6px)',
+            zIndex: 60,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            animation: 'fadeIn 0.2s ease',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: 560, maxWidth: 'calc(100vw - 40px)',
+              background: 'rgba(10,10,15,0.95)',
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)',
+              border: '1px solid rgba(255,255,255,0.1)',
+              borderRadius: 16,
+              padding: '22px 24px',
+              display: 'flex', flexDirection: 'column', gap: 14,
+            }}
+          >
+            {/* Modal header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', color: selectedColor, textTransform: 'uppercase', marginBottom: 4 }}>LLM Briefing</div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: '#f0f0ff' }}>{selectedNode?.name}</div>
+              </div>
+              <button
+                onClick={() => setShowBriefing(false)}
+                style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)', fontSize: 22, cursor: 'pointer', lineHeight: 1, padding: '2px 6px' }}
+              >×</button>
+            </div>
+
+            {/* Briefing textarea */}
+            {briefingLoading ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '20px 0', color: 'rgba(255,255,255,0.3)', fontSize: 13 }}>
+                <div style={{ width: 14, height: 14, border: '2px solid rgba(168,155,255,0.3)', borderTopColor: '#a89bff', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+                Compressing knowledge…
+              </div>
+            ) : (
+              <textarea
+                readOnly
+                value={briefing}
+                style={{
+                  width: '100%', minHeight: 220,
+                  background: '#0d0d14',
+                  border: '1px solid #1a1a2e',
+                  color: '#c0c0d0',
+                  fontFamily: '"DM Mono", "Fira Mono", monospace',
+                  fontSize: 13, lineHeight: 1.7,
+                  padding: 16, borderRadius: 10,
+                  resize: 'none', outline: 'none',
+                  boxSizing: 'border-box',
+                }}
+              />
+            )}
+
+            {/* Metadata + copy button */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', lineHeight: 1.6 }}>
+                {briefingMeta && (
+                  <>
+                    Compressed from {briefingMeta.chunk_count} chunk{briefingMeta.chunk_count !== 1 ? 's' : ''} ·{' '}
+                    {Object.entries(briefingMeta.source_breakdown).map(([k, v]) => `${v} ${k}`).join(', ')}
+                  </>
+                )}
+              </div>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(briefing)
+                  setBriefingCopied(true)
+                  setTimeout(() => setBriefingCopied(false), 2000)
+                }}
+                disabled={briefingLoading || !briefing}
+                style={{
+                  padding: '7px 16px',
+                  background: briefingCopied ? 'rgba(52,211,153,0.15)' : 'rgba(168,155,255,0.12)',
+                  border: `1px solid ${briefingCopied ? 'rgba(52,211,153,0.4)' : 'rgba(168,155,255,0.3)'}`,
+                  borderRadius: 8,
+                  color: briefingCopied ? '#34d399' : '#a89bff',
+                  fontSize: 12, fontWeight: 500,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                  flexShrink: 0,
+                }}
+              >
+                {briefingCopied ? '✓ Copied' : 'Copy to clipboard'}
+              </button>
+            </div>
           </div>
         </div>
       )}

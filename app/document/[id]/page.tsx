@@ -74,6 +74,13 @@ const IconCopy = () => (
   </svg>
 );
 
+const IconCompress = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/>
+    <line x1="10" y1="14" x2="3" y2="21"/><line x1="21" y1="3" x2="14" y2="10"/>
+  </svg>
+);
+
 // ── Document page ──────────────────────────────────────────── //
 export default function DocumentPage() {
   const params = useParams();
@@ -95,6 +102,11 @@ export default function DocumentPage() {
   const [chatInput, setChatInput]       = useState("");
   const [chatLoading, setChatLoading]   = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const [compressed, setCompressed]     = useState<string | null>(null);
+  const [compressMeta, setCompressMeta] = useState<{chunk_count: number; source_breakdown: Record<string, number>} | null>(null);
+  const [compressLoading, setCompressLoading] = useState(false);
+  const [showCompressed, setShowCompressed]   = useState(false);
+  const [compressCopied, setCompressCopied]   = useState(false);
 
   // Load document + related on mount
   useEffect(() => {
@@ -152,6 +164,25 @@ export default function DocumentPage() {
     } catch {
       setMessages(prev => [...prev, { role: "assistant", content: "Something went wrong. Please try again." }]);
     } finally { setChatLoading(false); }
+  };
+
+  const handleCompress = async () => {
+    if (compressed) { setShowCompressed(true); return; }
+    setCompressLoading(true);
+    setShowCompressed(true);
+    try {
+      const res  = await authFetch(`${BACKEND}/documents/${id}/export`, { method: "POST" });
+      const data = await res.json();
+      setCompressed(data.briefing || "");
+      setCompressMeta({ chunk_count: data.chunk_count, source_breakdown: data.source_breakdown || {} });
+      navigator.clipboard.writeText(data.briefing || "").catch(() => {});
+      setCompressCopied(true);
+      setTimeout(() => setCompressCopied(false), 2000);
+    } catch {
+      setCompressed("Failed to compress. Check your Groq API key.");
+    } finally {
+      setCompressLoading(false);
+    }
   };
 
   // ── Loading / not found states ──────────────────────────── //
@@ -340,7 +371,113 @@ export default function DocumentPage() {
             >
               <IconCopy />{copied ? "Copied!" : "Copy URL"}
             </button>
+            <button
+              className="btn btn-ghost"
+              onClick={handleCompress}
+              disabled={compressLoading}
+              style={{ padding: "6px 12px", fontSize: "12.5px", gap: "5px", color: compressLoading ? "var(--text-3)" : "var(--accent)" }}
+            >
+              {compressLoading
+                ? <><div className="spinner spinner-sm" style={{ width: 10, height: 10 }} />Compressing…</>
+                : <><IconCompress />Compress</>}
+            </button>
           </div>
+
+          {/* Compress overlay */}
+          {showCompressed && (
+            <div
+              style={{
+                position: "fixed", inset: 0, zIndex: 50,
+                background: "rgba(0,0,0,0.6)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                padding: "20px",
+              }}
+              onClick={() => setShowCompressed(false)}
+            >
+              <div
+                style={{
+                  background: "rgba(10,10,15,0.97)",
+                  backdropFilter: "blur(20px)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: "16px",
+                  width: "100%", maxWidth: "560px",
+                  padding: "24px",
+                  display: "flex", flexDirection: "column", gap: "14px",
+                }}
+                onClick={e => e.stopPropagation()}
+              >
+                {/* Header */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <IconCompress />
+                    <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--accent)", letterSpacing: "0.1em", textTransform: "uppercase" }}>
+                      Compressed Context
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setShowCompressed(false)}
+                    style={{ background: "none", border: "none", color: "var(--text-3)", fontSize: "22px", lineHeight: 1, cursor: "pointer", padding: "0 2px" }}
+                  >×</button>
+                </div>
+
+                {/* Content */}
+                {compressLoading ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "var(--text-2)", fontSize: "13px", padding: "20px 0" }}>
+                    <div className="spinner spinner-sm" />Compressing with AI…
+                  </div>
+                ) : (
+                  <textarea
+                    readOnly
+                    value={compressed || ""}
+                    style={{
+                      background: "#0d0d14",
+                      border: "1px solid rgba(255,255,255,0.07)",
+                      borderRadius: "10px",
+                      padding: "16px",
+                      color: "rgba(224,224,240,0.85)",
+                      fontFamily: '"DM Mono", "Fira Code", monospace',
+                      fontSize: "12.5px",
+                      lineHeight: 1.75,
+                      resize: "none",
+                      minHeight: "200px",
+                      maxHeight: "340px",
+                      width: "100%",
+                      outline: "none",
+                    }}
+                  />
+                )}
+
+                {/* Footer */}
+                {!compressLoading && compressMeta && (
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: "11px", color: "var(--text-3)" }}>
+                      {compressMeta.chunk_count} chunks · {compressMeta.source_breakdown.capture ?? 0} capture
+                      {(compressMeta.source_breakdown.chat ?? 0) > 0 ? `, ${compressMeta.source_breakdown.chat} chat` : ""}
+                      {(compressMeta.source_breakdown.note ?? 0) > 0 ? `, ${compressMeta.source_breakdown.note} note` : ""}
+                    </span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(compressed || "").catch(() => {});
+                        setCompressCopied(true);
+                        setTimeout(() => setCompressCopied(false), 2000);
+                      }}
+                      style={{
+                        padding: "6px 14px",
+                        background: compressCopied ? "rgba(74,222,128,0.1)" : "rgba(99,102,241,0.12)",
+                        border: `1px solid ${compressCopied ? "rgba(74,222,128,0.25)" : "rgba(99,102,241,0.3)"}`,
+                        borderRadius: "8px",
+                        color: compressCopied ? "var(--green)" : "var(--accent)",
+                        fontSize: "12px", fontWeight: 500,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {compressCopied ? "✓ Copied" : "Copy"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
           {showContent && doc.content && (
             <div className="card fade-up md" style={{ marginTop: "12px", padding: "24px 26px", maxHeight: "560px", overflowY: "auto", fontSize: "14.5px", color: "var(--text-2)", lineHeight: 1.9 }}>
               <ReactMarkdown>{doc.content}</ReactMarkdown>
