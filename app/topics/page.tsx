@@ -308,9 +308,9 @@ export default function TopicsPage() {
       lineWidth = 1.1
       dash = []
     } else {
-      // Weak: dashed whisper
-      baseAlpha = 0.18
-      lineWidth = 0.7
+      // Weak: dashed, same brightness as medium
+      baseAlpha = 0.40
+      lineWidth = 1.1
       dash = [3, 5]
     }
 
@@ -319,7 +319,7 @@ export default function TopicsPage() {
 
     const grad = ctx.createLinearGradient(s.x, s.y, t.x, t.y)
     // Strong edges get more saturated color stops
-    const opacity = w >= 0.85 ? 'cc' : w >= 0.72 ? '80' : '44'
+    const opacity = w >= 0.85 ? 'cc' : '80'
     grad.addColorStop(0, sc + opacity)
     grad.addColorStop(1, tc + opacity)
 
