@@ -297,20 +297,20 @@ export default function TopicsPage() {
     let lineWidth: number
     let dash: number[]
 
-    if (w >= 0.85) {
-      // Strong: solid bright line
-      baseAlpha = 0.75
-      lineWidth = 2.0
+    if (w >= 0.80) {
+      // Strong: near-synonyms within a cluster (solid bright)
+      baseAlpha = 0.80
+      lineWidth = 2.2
       dash = []
-    } else if (w >= 0.72) {
-      // Medium: solid but softer
-      baseAlpha = 0.40
-      lineWidth = 1.1
+    } else if (w >= 0.68) {
+      // Medium: related concepts, same or cross-doc (solid softer)
+      baseAlpha = 0.42
+      lineWidth = 1.2
       dash = []
     } else {
-      // Weak: dashed, same brightness as medium
-      baseAlpha = 0.40
-      lineWidth = 1.1
+      // Weak: cross-domain bridges (dashed, same brightness as medium)
+      baseAlpha = 0.42
+      lineWidth = 1.2
       dash = [3, 5]
     }
 
@@ -766,18 +766,18 @@ export default function TopicsPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
             {/* Strong */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-              <svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="rgba(168,155,255,0.8)" strokeWidth="2"/></svg>
-              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>strong</span>
+              <svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="rgba(168,155,255,0.85)" strokeWidth="2.2"/></svg>
+              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>strong ≥0.80</span>
             </div>
             {/* Medium */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
               <svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="rgba(168,155,255,0.45)" strokeWidth="1.2"/></svg>
-              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>related</span>
+              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>related ≥0.68</span>
             </div>
             {/* Weak dashed */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-              <svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="rgba(168,155,255,0.25)" strokeWidth="0.8" strokeDasharray="3 4"/></svg>
-              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>weak</span>
+              <svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="rgba(168,155,255,0.45)" strokeWidth="1.2" strokeDasharray="3 4"/></svg>
+              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>bridge ≥0.60</span>
             </div>
           </div>
           <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.12)' }}>Click node to inspect · Scroll to zoom · Drag to explore</span>
