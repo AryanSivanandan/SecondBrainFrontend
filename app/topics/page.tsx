@@ -142,18 +142,22 @@ export default function TopicsPage() {
       })
       setColorMap(newColorMap)
 
+      // Pre-scatter nodes so they don't start piled at (0,0) and explode outward
+      const spread = Math.min(300, 60 + rawNodes.length * 12)
       const nodes: ConceptNode[] = rawNodes.map((n, i) => {
         const chunks = n.chunk_count || 1
+        const angle  = (i / rawNodes.length) * 2 * Math.PI
         return {
           id:          String(n.id),
           numId:       n.id,
           name:        n.name,
           description: n.description || '',
           chunk_count: chunks,
-          // Minimum 6px for sparse nodes, scales up with chunk_count
           size:        Math.max(6, Math.min(24, 6 + chunks * 2)),
           color:       CLUSTER_COLORS[i % CLUSTER_COLORS.length],
           nodeType:    'concept' as const,
+          x:           Math.cos(angle) * spread * (0.5 + Math.random() * 0.5),
+          y:           Math.sin(angle) * spread * (0.5 + Math.random() * 0.5),
         }
       })
 
@@ -179,12 +183,18 @@ export default function TopicsPage() {
 
   useEffect(() => { loadGraph() }, [loadGraph])
 
-  // D3 force tuning
+  // D3 force tuning — runs whenever graph data changes
   useEffect(() => {
     if (!fgRef.current || graphData.nodes.length === 0) return
     const fg = fgRef.current
-    fg.d3Force('charge')?.strength((n: ConceptNode) => -80 - (n.chunk_count || 1) * 5)
-    fg.d3Force('link')?.distance((l: GraphLink) => Math.max(60, 120 - (l.weight || 0.5) * 50))
+    // Gentle repulsion: base -20, +2 per chunk — keeps clusters tight
+    fg.d3Force('charge')?.strength((n: ConceptNode) => -20 - (n.chunk_count || 1) * 2)
+    // Short link distances so connected nodes sit close together
+    fg.d3Force('link')?.distance((l: GraphLink) => 40 + (1 - (l.weight || 0.5)) * 20)
+    // Pull everything toward center so isolated nodes don't drift to the edges
+    fg.d3Force('center')?.strength(0.08)
+    // Reheat so updated forces take effect immediately
+    fg.d3ReheatSimulation()
   }, [graphData])
 
   // ── Build graph ─────────────────────────────────────────────────────────────
@@ -353,10 +363,10 @@ export default function TopicsPage() {
           linkCanvasObjectMode={() => 'replace'}
           onRenderFramePre={paintBackground}
 
-          d3AlphaDecay={0.015}
-          d3VelocityDecay={0.25}
-          cooldownTicks={300}
-          warmupTicks={50}
+          d3AlphaDecay={0.04}
+          d3VelocityDecay={0.4}
+          cooldownTicks={150}
+          warmupTicks={100}
           onEngineStop={() => setGraphReady(true)}
 
           onNodeClick={handleNodeClick}
