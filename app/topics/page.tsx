@@ -36,10 +36,12 @@ interface GraphData {
   links: GraphLink[]
 }
 
-interface ConceptChunk {
-  chunk_id: number
-  chunk: string
-  document_id: number
+interface ConceptDoc {
+  id: number
+  title: string
+  url?: string
+  excerpt?: string
+  captured_at?: string
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -84,7 +86,7 @@ export default function TopicsPage() {
 
   const [graphData,    setGraphData]    = useState<GraphData>({ nodes: [], links: [] })
   const [colorMap,     setColorMap]     = useState<Record<string, string>>({})
-  const [panelChunks,  setPanelChunks]  = useState<ConceptChunk[]>([])
+  const [panelDocs,    setPanelDocs]    = useState<ConceptDoc[]>([])
   const [panelLoading, setPanelLoading] = useState(false)
 
   const [loading,      setLoading]      = useState(true)
@@ -202,7 +204,8 @@ export default function TopicsPage() {
   const handleBuild = async () => {
     setBuilding(true)
     try {
-      await authFetch('/concepts/build-edges',     { method: 'POST' })
+      // rebuild=true: full wipe-and-recompute since user explicitly clicked Build Graph
+      await authFetch('/concepts/build-edges?rebuild=true',     { method: 'POST' })
       await authFetch('/concepts/build-hierarchy', { method: 'POST' })
       await loadGraph()
     } catch (e: any) {
@@ -316,12 +319,12 @@ export default function TopicsPage() {
     const n = node as ConceptNode
     if (selectedNode?.id === n.id) { setSelectedNode(null); return }
     setSelectedNode(n)
-    setPanelChunks([])
+    setPanelDocs([])
     setPanelLoading(true)
     try {
       const data = await authFetch(`/concepts/${n.numId}/chunks`)
-      setPanelChunks(Array.isArray(data) ? data : [])
-    } catch { setPanelChunks([]) }
+      setPanelDocs(Array.isArray(data) ? data : [])
+    } catch { setPanelDocs([]) }
     finally { setPanelLoading(false) }
   }, [selectedNode])
 
@@ -537,7 +540,7 @@ export default function TopicsPage() {
 
             {/* Relevant chunks */}
             <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)', marginBottom: 10 }}>
-              Relevant Chunks
+              Documents
             </div>
 
             {panelLoading && (
@@ -547,20 +550,25 @@ export default function TopicsPage() {
               </div>
             )}
 
-            {!panelLoading && panelChunks.length > 0 && (
+            {!panelLoading && panelDocs.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {panelChunks.map((c, i) => (
-                  <Link key={i} href={`/document/${c.document_id}`}>
+                {panelDocs.map((doc: ConceptDoc) => (
+                  <Link key={doc.id} href={`/document/${doc.id}`}>
                     <div
                       style={{ padding: '10px 13px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 9, cursor: 'pointer', transition: 'background 0.15s, border-color 0.15s' }}
                       onMouseOver={e => { e.currentTarget.style.background = `${selectedColor}10`; e.currentTarget.style.borderColor = `${selectedColor}30` }}
                       onMouseOut={e =>  { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.07)' }}
                     >
-                      <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', lineHeight: 1.6 }}>
-                        {c.chunk.length > 160 ? c.chunk.slice(0, 158) + '…' : c.chunk}
+                      <div style={{ fontSize: 12.5, fontWeight: 500, color: 'rgba(255,255,255,0.75)', lineHeight: 1.4, marginBottom: doc.excerpt ? 4 : 0 }}>
+                        {doc.title}
                       </div>
-                      <div style={{ marginTop: 6, fontSize: 10.5, color: selectedColor, opacity: 0.7 }}>
-                        Doc #{c.document_id} →
+                      {doc.excerpt && (
+                        <div style={{ fontSize: 11.5, color: 'rgba(255,255,255,0.35)', lineHeight: 1.5 }}>
+                          {doc.excerpt.length > 100 ? doc.excerpt.slice(0, 98) + '…' : doc.excerpt}
+                        </div>
+                      )}
+                      <div style={{ marginTop: 5, fontSize: 10.5, color: selectedColor, opacity: 0.6 }}>
+                        Open document →
                       </div>
                     </div>
                   </Link>
@@ -568,8 +576,8 @@ export default function TopicsPage() {
               </div>
             )}
 
-            {!panelLoading && panelChunks.length === 0 && (
-              <p style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.2)', margin: 0 }}>No chunks found for this concept.</p>
+            {!panelLoading && panelDocs.length === 0 && (
+              <p style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.2)', margin: 0 }}>No documents found for this concept.</p>
             )}
           </div>
         </div>
