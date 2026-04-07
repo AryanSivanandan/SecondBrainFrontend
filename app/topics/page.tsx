@@ -152,7 +152,7 @@ export default function TopicsPage() {
       setColorMap(newColorMap)
 
       // Pre-scatter nodes so they don't start piled at (0,0) and explode outward
-      const spread = Math.min(300, 60 + rawNodes.length * 12)
+      const spread = Math.min(200, 40 + rawNodes.length * 8)
       const nodes: ConceptNode[] = rawNodes.map((n, i) => {
         const chunks = n.chunk_count || 1
         const angle  = (i / rawNodes.length) * 2 * Math.PI
@@ -196,12 +196,12 @@ export default function TopicsPage() {
   useEffect(() => {
     if (!fgRef.current || graphData.nodes.length === 0) return
     const fg = fgRef.current
-    // Gentle repulsion: base -20, +2 per chunk — keeps clusters tight
-    fg.d3Force('charge')?.strength((n: ConceptNode) => -20 - (n.chunk_count || 1) * 2)
-    // Short link distances so connected nodes sit close together
-    fg.d3Force('link')?.distance((l: GraphLink) => 40 + (1 - (l.weight || 0.5)) * 20)
-    // Pull everything toward center so isolated nodes don't drift to the edges
-    fg.d3Force('center')?.strength(0.08)
+    // Stronger repulsion so disconnected clusters spread apart visibly
+    fg.d3Force('charge')?.strength((n: ConceptNode) => -120 - (n.chunk_count || 1) * 4)
+    // Short link distances keep connected nodes tight
+    fg.d3Force('link')?.distance((l: GraphLink) => 50 + (1 - (l.weight || 0.5)) * 30)
+    // Stronger center pull so clusters don't drift to corners
+    fg.d3Force('center')?.strength(0.25)
     // Reheat so updated forces take effect immediately
     fg.d3ReheatSimulation()
   }, [graphData])
@@ -285,25 +285,53 @@ export default function TopicsPage() {
     const t = link.target
     if (!s?.x || !t?.x) return
 
-    // Derive color by index from CLUSTER_COLORS using numeric id mod
+    const w = link.weight || 0.5
     const sc = CLUSTER_COLORS[(s.numId || 0) % CLUSTER_COLORS.length]
     const tc = CLUSTER_COLORS[(t.numId || 0) % CLUSTER_COLORS.length]
 
     const isActive = hoveredId !== null && (s.id === hoveredId || t.id === hoveredId)
     const isDimmed = hoveredId !== null && !isActive
-    ctx.globalAlpha = isDimmed ? 0.04 : 0.45
+
+    // Three tiers — strong / medium / weak
+    let baseAlpha: number
+    let lineWidth: number
+    let dash: number[]
+
+    if (w >= 0.85) {
+      // Strong: solid bright line
+      baseAlpha = 0.75
+      lineWidth = 2.0
+      dash = []
+    } else if (w >= 0.72) {
+      // Medium: solid but softer
+      baseAlpha = 0.40
+      lineWidth = 1.1
+      dash = []
+    } else {
+      // Weak: dashed whisper
+      baseAlpha = 0.18
+      lineWidth = 0.7
+      dash = [3, 5]
+    }
+
+    ctx.globalAlpha = isDimmed ? baseAlpha * 0.08 : isActive ? Math.min(1, baseAlpha * 1.6) : baseAlpha
+    ctx.setLineDash(dash)
 
     const grad = ctx.createLinearGradient(s.x, s.y, t.x, t.y)
-    grad.addColorStop(0, sc + '50')
-    grad.addColorStop(1, tc + '50')
+    // Strong edges get more saturated color stops
+    const opacity = w >= 0.85 ? 'cc' : w >= 0.72 ? '80' : '44'
+    grad.addColorStop(0, sc + opacity)
+    grad.addColorStop(1, tc + opacity)
 
     ctx.beginPath()
     ctx.moveTo(s.x, s.y)
     ctx.lineTo(t.x, t.y)
     ctx.strokeStyle = grad
-    ctx.lineWidth   = Math.max(0.5, (link.weight || 0.5) * 2)
+    ctx.lineWidth   = lineWidth
     ctx.stroke()
 
+    // Reset
+    ctx.setLineDash([])
     ctx.globalAlpha = 1
   }, [hoveredId])
 
@@ -394,7 +422,10 @@ export default function TopicsPage() {
           d3VelocityDecay={0.4}
           cooldownTicks={150}
           warmupTicks={100}
-          onEngineStop={() => setGraphReady(true)}
+          onEngineStop={() => {
+            setGraphReady(true)
+            fgRef.current?.zoomToFit(400, 80)
+          }}
 
           onNodeClick={handleNodeClick}
           onNodeHover={handleNodeHover}
@@ -728,10 +759,28 @@ export default function TopicsPage() {
         </div>
       )}
 
-      {/* Hint text */}
+      {/* Bottom legend + hint */}
       {graphReady && graphData.nodes.length > 0 && (
-        <div style={{ position: 'absolute', bottom: 18, left: 20, fontSize: 11, color: 'rgba(255,255,255,0.15)', pointerEvents: 'none', animation: 'fadeIn 1s ease' }}>
-          Click node to inspect · Scroll to zoom · Drag to explore
+        <div style={{ position: 'absolute', bottom: 18, left: 20, display: 'flex', flexDirection: 'column', gap: 6, pointerEvents: 'none', animation: 'fadeIn 1s ease' }}>
+          {/* Edge legend */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            {/* Strong */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="rgba(168,155,255,0.8)" strokeWidth="2"/></svg>
+              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>strong</span>
+            </div>
+            {/* Medium */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="rgba(168,155,255,0.45)" strokeWidth="1.2"/></svg>
+              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>related</span>
+            </div>
+            {/* Weak dashed */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="rgba(168,155,255,0.25)" strokeWidth="0.8" strokeDasharray="3 4"/></svg>
+              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>weak</span>
+            </div>
+          </div>
+          <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.12)' }}>Click node to inspect · Scroll to zoom · Drag to explore</span>
         </div>
       )}
     </div>
