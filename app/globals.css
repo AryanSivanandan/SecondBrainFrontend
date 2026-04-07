@@ -308,6 +308,11 @@ button { cursor: pointer; }
   to   { transform: translateX(0); }
 }
 
+@keyframes skeletonPulse {
+  0%, 100% { opacity: 0.5; }
+  50%       { opacity: 0.2; }
+}
+
 /* ── Responsive ──────────────────────────────────────────────── */
 @media (max-width: 768px) {
   .sidebar { display: none; }

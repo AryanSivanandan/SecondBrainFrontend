@@ -10,50 +10,36 @@ const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), { ssr: false 
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-interface TopicNode {
-  id: string
+interface ConceptNode {
+  id: string            // string form of numeric id (used by force-graph)
   numId: number
   name: string
   description: string
   chunk_count: number
   size: number
   color: string
-  is_single: boolean
-  nodeType: 'topic'
+  nodeType: 'concept'
   x?: number
   y?: number
 }
-
-interface DocNode {
-  id: string
-  docId: number
-  name: string
-  parentTopic: string
-  color: string
-  nodeType: 'doc'
-  x?: number
-  y?: number
-}
-
-type GraphNode = TopicNode | DocNode
 
 interface GraphLink {
   source: string
   target: string
-  similarity: number
-  linkType: 'topic-topic' | 'topic-doc'
+  weight: number
+  label: string
+  linkType: 'concept-concept'
 }
 
 interface GraphData {
-  nodes: GraphNode[]
+  nodes: ConceptNode[]
   links: GraphLink[]
 }
 
-interface TopicDoc {
-  id: number
-  title: string
-  url?: string
-  excerpt?: string
+interface ConceptChunk {
+  chunk_id: number
+  chunk: string
+  document_id: number
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -63,10 +49,10 @@ const BACKEND = '/api'
 const CLUSTER_COLORS = [
   '#22d3ee', // cyan
   '#a3e635', // chartreuse
-  '#fb923c', // coral/orange
+  '#fb923c', // coral
   '#facc15', // yellow
   '#a78bfa', // purple
-  '#34d399', // mint/emerald
+  '#34d399', // mint
   '#f97316', // orange
   '#c084fc', // lavender
   '#f472b6', // pink
@@ -96,22 +82,23 @@ export default function TopicsPage() {
   const fgRef    = useRef<any>(null)
   const starsRef = useRef<{ x: number; y: number; r: number; a: number }[]>([])
 
-  const [graphData,     setGraphData]     = useState<GraphData>({ nodes: [], links: [] })
-  const [topicDocsMap,  setTopicDocsMap]  = useState<Record<string, TopicDoc[]>>({})
-  const [colorMap,      setColorMap]      = useState<Record<string, string>>({})
+  const [graphData,    setGraphData]    = useState<GraphData>({ nodes: [], links: [] })
+  const [colorMap,     setColorMap]     = useState<Record<string, string>>({})
+  const [panelChunks,  setPanelChunks]  = useState<ConceptChunk[]>([])
+  const [panelLoading, setPanelLoading] = useState(false)
 
-  const [loading,       setLoading]       = useState(true)
-  const [rebuilding,    setRebuilding]    = useState(false)
-  const [graphReady,    setGraphReady]    = useState(false)
-  const [autoMsg,       setAutoMsg]       = useState<string | null>(null)
-  const [error,         setError]         = useState<string | null>(null)
-  const [noData,        setNoData]        = useState(false)
+  const [loading,      setLoading]      = useState(true)
+  const [building,     setBuilding]     = useState(false)
+  const [graphReady,   setGraphReady]   = useState(false)
+  const [error,        setError]        = useState<string | null>(null)
+  const [noData,       setNoData]       = useState(false)
+  const [statsText,    setStatsText]    = useState('')
 
-  const [selectedTopic, setSelectedTopic] = useState<TopicNode | null>(null)
-  const [hoveredId,     setHoveredId]     = useState<string | null>(null)
-  const [dims,          setDims]          = useState({ w: 0, h: 0 })
+  const [selectedNode, setSelectedNode] = useState<ConceptNode | null>(null)
+  const [hoveredId,    setHoveredId]    = useState<string | null>(null)
+  const [dims,         setDims]         = useState({ w: 0, h: 0 })
 
-  // Track window dimensions for full-viewport canvas
+  // Track window dimensions
   useEffect(() => {
     const update = () => setDims({ w: window.innerWidth, h: window.innerHeight })
     update()
@@ -130,304 +117,181 @@ export default function TopicsPage() {
     }))
   }, [])
 
-  // ── Data loading ────────────────────────────────────────────────────────────
+  // ── Load graph from /concepts/graph ────────────────────────────────────────
 
-  const buildGraph = useCallback(async (topicData: any) => {
-    const topics: any[] = topicData.nodes || []
-    const edges: any[]  = topicData.edges || []
-
-    if (topics.length === 0) { setNoData(true); return }
-    setNoData(false)
-
-    // Assign a stable color per topic index
-    const newColorMap: Record<string, string> = {}
-    topics.forEach((t, i) => {
-      newColorMap[String(t.id)] = t.is_single
-        ? 'rgba(160,130,220,0.55)'
-        : CLUSTER_COLORS[i % CLUSTER_COLORS.length]
-    })
-    setColorMap(newColorMap)
-
-    // Fetch all topic docs in parallel
-    const docResults = await Promise.all(
-      topics.map(t =>
-        authFetch(`/topics/${t.id}/chunks`).catch(() => [])
-      )
-    )
-    const newDocsMap: Record<string, TopicDoc[]> = {}
-    topics.forEach((t, i) => {
-      newDocsMap[String(t.id)] = docResults[i] || []
-    })
-    setTopicDocsMap(newDocsMap)
-
-    // Save doc count for auto-rebuild detection
-    const totalDocs = new Set(docResults.flat().map((d: any) => d.id)).size
-    try { localStorage.setItem('sb_topics_rebuild_doc_count', String(totalDocs)) } catch {}
-
-    // Build nodes
-    const nodes: GraphNode[] = []
-    const links: GraphLink[] = []
-
-    for (const t of topics) {
-      const color = newColorMap[String(t.id)]
-      nodes.push({
-        id:          String(t.id),
-        numId:       t.id,
-        name:        t.name,
-        description: t.description || '',
-        chunk_count: t.chunk_count,
-        size:        t.is_single ? 4 : Math.max(10, Math.min(36, 10 + t.chunk_count * 2.5)),
-        color,
-        is_single:   t.is_single,
-        nodeType:    'topic',
-      })
-
-      // Doc satellite nodes for non-single topics
-      if (!t.is_single) {
-        const docs = newDocsMap[String(t.id)] || []
-        const unique = docs.filter((d, i, arr) => arr.findIndex(x => x.id === d.id) === i)
-        for (const doc of unique) {
-          const docNodeId = `doc-${doc.id}-topic-${t.id}`
-          nodes.push({
-            id:          docNodeId,
-            docId:       doc.id,
-            name:        doc.title || 'Untitled',
-            parentTopic: String(t.id),
-            color,
-            nodeType:    'doc',
-          })
-          links.push({ source: String(t.id), target: docNodeId, similarity: 1, linkType: 'topic-doc' })
-        }
-      }
-    }
-
-    // Topic-to-topic edges
-    for (const e of edges) {
-      links.push({
-        source:     String(e.source),
-        target:     String(e.target),
-        similarity: e.similarity,
-        linkType:   'topic-topic',
-      })
-    }
-
-    setGraphData({ nodes, links })
-  }, [])
-
-  const loadWithAutoRebuild = useCallback(async () => {
+  const loadGraph = useCallback(async () => {
     setLoading(true)
     setError(null)
     setNoData(false)
     setGraphReady(false)
     try {
-      const [topicData, docsData] = await Promise.all([
-        authFetch('/topics'),
-        authFetch('/documents?limit=500').catch(() => ({ documents: [] })),
-      ])
+      const data = await authFetch('/concepts/graph')
+      const rawNodes: any[] = data.nodes || []
+      const rawEdges: any[] = data.edges || []
 
-      const topicNodes: any[] = topicData.nodes || []
-      const currentDocCount   = (docsData.documents || []).length
-
-      let storedCount = 0
-      try { storedCount = parseInt(localStorage.getItem('sb_topics_rebuild_doc_count') || '0', 10) } catch {}
-
-      const shouldRebuild =
-        topicNodes.length === 0 ||
-        (currentDocCount > storedCount + 4)
-
-      if (shouldRebuild) {
-        const msg = topicNodes.length === 0
-          ? 'Building your knowledge galaxy for the first time…'
-          : 'New captures detected — updating your galaxy…'
-        setAutoMsg(msg)
-        await authFetch('/topics/rebuild', { method: 'POST' })
-        const fresh = await authFetch('/topics')
-        await buildGraph(fresh)
-        setAutoMsg(null)
-      } else {
-        await buildGraph(topicData)
+      if (rawNodes.length === 0) {
+        setNoData(true)
+        setStatsText('0 concepts · 0 connections')
+        return
       }
+
+      // Assign stable color per index
+      const newColorMap: Record<string, string> = {}
+      rawNodes.forEach((n, i) => {
+        newColorMap[String(n.id)] = CLUSTER_COLORS[i % CLUSTER_COLORS.length]
+      })
+      setColorMap(newColorMap)
+
+      const nodes: ConceptNode[] = rawNodes.map((n, i) => {
+        const chunks = n.chunk_count || 1
+        return {
+          id:          String(n.id),
+          numId:       n.id,
+          name:        n.name,
+          description: n.description || '',
+          chunk_count: chunks,
+          // Minimum 6px for sparse nodes, scales up with chunk_count
+          size:        Math.max(6, Math.min(24, 6 + chunks * 2)),
+          color:       CLUSTER_COLORS[i % CLUSTER_COLORS.length],
+          nodeType:    'concept' as const,
+        }
+      })
+
+      const idSet = new Set(nodes.map(n => n.id))
+      const links: GraphLink[] = rawEdges
+        .filter((e: any) => idSet.has(String(e.source)) && idSet.has(String(e.target)))
+        .map((e: any) => ({
+          source:   String(e.source),
+          target:   String(e.target),
+          weight:   e.weight || 0.5,
+          label:    e.label  || '',
+          linkType: 'concept-concept' as const,
+        }))
+
+      setGraphData({ nodes, links })
+      setStatsText(`${nodes.length} concepts · ${links.length} connections`)
     } catch (e: any) {
       setError(e.message)
     } finally {
       setLoading(false)
     }
-  }, [buildGraph])
+  }, [])
 
-  useEffect(() => { loadWithAutoRebuild() }, [loadWithAutoRebuild])
+  useEffect(() => { loadGraph() }, [loadGraph])
 
-  // ── D3 force customization ──────────────────────────────────────────────────
-
+  // D3 force tuning
   useEffect(() => {
     if (!fgRef.current || graphData.nodes.length === 0) return
     const fg = fgRef.current
-
-    fg.d3Force('charge')?.strength((n: GraphNode) => {
-      if (n.nodeType === 'doc') return -25
-      const t = n as TopicNode
-      return t.is_single ? -20 : -80 - t.chunk_count * 5
-    })
-
-    fg.d3Force('link')?.distance((l: GraphLink) => {
-      if (l.linkType === 'topic-doc') return 45
-      return Math.max(60, 120 - l.similarity * 50)
-    })
+    fg.d3Force('charge')?.strength((n: ConceptNode) => -80 - (n.chunk_count || 1) * 5)
+    fg.d3Force('link')?.distance((l: GraphLink) => Math.max(60, 120 - (l.weight || 0.5) * 50))
   }, [graphData])
 
-  // ── Rebuild ─────────────────────────────────────────────────────────────────
+  // ── Build graph ─────────────────────────────────────────────────────────────
 
-  const handleRebuild = async () => {
-    setRebuilding(true)
-    setGraphReady(false)
+  const handleBuild = async () => {
+    setBuilding(true)
     try {
-      await authFetch('/topics/rebuild', { method: 'POST' })
-      const fresh = await authFetch('/topics')
-      await buildGraph(fresh)
+      await authFetch('/concepts/build-edges',     { method: 'POST' })
+      await authFetch('/concepts/build-hierarchy', { method: 'POST' })
+      await loadGraph()
     } catch (e: any) {
       setError(e.message)
     } finally {
-      setRebuilding(false)
+      setBuilding(false)
     }
   }
 
   // ── Canvas paint callbacks ──────────────────────────────────────────────────
 
   const paintNode = useCallback((node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
-    const n: GraphNode = node
-    const isHovered    = n.id === hoveredId
-    const isDimmed     = hoveredId !== null && !isHovered &&
-                         !(n.nodeType === 'doc' && (n as DocNode).parentTopic === hoveredId)
-    const alpha        = isDimmed ? 0.18 : 1
+    const n      = node as ConceptNode
+    const r      = n.size / 2
+    const hovered = n.id === hoveredId
+    const dimmed  = hoveredId !== null && !hovered
+    ctx.globalAlpha = dimmed ? 0.2 : 1
 
-    ctx.globalAlpha = alpha
-
-    if (n.nodeType === 'topic') {
-      const t = n as TopicNode
-      const r = t.size / 2
-
-      if (!t.is_single) {
-        // Multi-layer glow (bloom effect)
-        const glowLayers = isHovered ? 4 : 3
-        for (let i = glowLayers; i >= 1; i--) {
-          ctx.beginPath()
-          ctx.arc(node.x, node.y, r + i * 6, 0, Math.PI * 2)
-          ctx.fillStyle = t.color + Math.floor((0.06 / i) * 255).toString(16).padStart(2, '0')
-          ctx.fill()
-        }
-
-        // Core fill
-        const grad = ctx.createRadialGradient(node.x - r * 0.3, node.y - r * 0.3, 0, node.x, node.y, r)
-        grad.addColorStop(0, '#ffffff55')
-        grad.addColorStop(0.4, t.color + 'cc')
-        grad.addColorStop(1,   t.color + '88')
-        ctx.beginPath()
-        ctx.arc(node.x, node.y, r, 0, Math.PI * 2)
-        ctx.fillStyle = grad
-        ctx.fill()
-
-        // Ring
-        ctx.beginPath()
-        ctx.arc(node.x, node.y, r, 0, Math.PI * 2)
-        ctx.strokeStyle = isHovered ? '#ffffff88' : t.color + 'aa'
-        ctx.lineWidth   = isHovered ? 1.5 : 0.8
-        ctx.stroke()
-
-        // Label
-        const fontSize = Math.max(8, Math.min(12, 9 + t.chunk_count * 0.3)) / globalScale
-        ctx.font        = `600 ${fontSize}px system-ui, sans-serif`
-        ctx.textAlign   = 'center'
-        ctx.textBaseline = 'middle'
-        ctx.fillStyle   = isHovered ? '#ffffff' : '#ffffffcc'
-        ctx.fillText(
-          t.name.length > 20 ? t.name.slice(0, 18) + '…' : t.name,
-          node.x,
-          node.y + r + fontSize * 1.2,
-        )
-      } else {
-        // Single-chunk node — small muted dot, label on hover only
-        ctx.beginPath()
-        ctx.arc(node.x, node.y, 3, 0, Math.PI * 2)
-        ctx.fillStyle = t.color
-        ctx.fill()
-
-        if (isHovered) {
-          const fontSize = 9 / globalScale
-          ctx.font       = `${fontSize}px system-ui, sans-serif`
-          ctx.textAlign  = 'center'
-          ctx.fillStyle  = '#ffffffaa'
-          ctx.fillText(t.name.length > 22 ? t.name.slice(0, 20) + '…' : t.name, node.x, node.y + 3 + fontSize * 1.3)
-        }
-      }
-    } else {
-      // Doc satellite — tiny white/colored dot
-      const color = (n as DocNode).color
+    // Multi-layer bloom glow
+    const layers = hovered ? 4 : 3
+    for (let i = layers; i >= 1; i--) {
       ctx.beginPath()
-      ctx.arc(node.x, node.y, isHovered ? 3.5 : 2.2, 0, Math.PI * 2)
-      ctx.fillStyle = isHovered ? '#ffffff' : color + '99'
+      ctx.arc(node.x, node.y, r + i * 5, 0, Math.PI * 2)
+      ctx.fillStyle = n.color + Math.floor((0.05 / i) * 255).toString(16).padStart(2, '0')
       ctx.fill()
     }
+
+    // Core radial gradient fill
+    const grad = ctx.createRadialGradient(node.x - r * 0.3, node.y - r * 0.3, 0, node.x, node.y, r)
+    grad.addColorStop(0, '#ffffff55')
+    grad.addColorStop(0.4, n.color + 'cc')
+    grad.addColorStop(1,   n.color + '88')
+    ctx.beginPath()
+    ctx.arc(node.x, node.y, r, 0, Math.PI * 2)
+    ctx.fillStyle = grad
+    ctx.fill()
+
+    // Ring
+    ctx.beginPath()
+    ctx.arc(node.x, node.y, r, 0, Math.PI * 2)
+    ctx.strokeStyle = hovered ? '#ffffffaa' : n.color + 'aa'
+    ctx.lineWidth   = hovered ? 1.5 : 0.8
+    ctx.stroke()
+
+    // Label
+    const fontSize = Math.max(8, Math.min(12, 9 + n.chunk_count * 0.2)) / globalScale
+    ctx.font        = `600 ${fontSize}px system-ui, sans-serif`
+    ctx.textAlign   = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillStyle   = hovered ? '#ffffff' : '#ffffffcc'
+    ctx.fillText(
+      n.name.length > 20 ? n.name.slice(0, 18) + '…' : n.name,
+      node.x,
+      node.y + r + fontSize * 1.3,
+    )
 
     ctx.globalAlpha = 1
   }, [hoveredId])
 
   const paintNodePointer = useCallback((node: any, paintColor: string, ctx: CanvasRenderingContext2D) => {
-    const n: GraphNode = node
+    const n = node as ConceptNode
     ctx.fillStyle = paintColor
-    if (n.nodeType === 'topic') {
-      const t = n as TopicNode
-      ctx.beginPath()
-      ctx.arc(node.x, node.y, t.is_single ? 8 : t.size / 2 + 8, 0, Math.PI * 2)
-      ctx.fill()
-    } else {
-      ctx.beginPath()
-      ctx.arc(node.x, node.y, 10, 0, Math.PI * 2)
-      ctx.fill()
-    }
+    ctx.beginPath()
+    ctx.arc(node.x, node.y, n.size / 2 + 8, 0, Math.PI * 2)
+    ctx.fill()
   }, [])
 
   const paintLink = useCallback((link: any, ctx: CanvasRenderingContext2D) => {
-    const src = link.source
-    const tgt = link.target
-    if (!src?.x || !tgt?.x) return
+    const s = link.source
+    const t = link.target
+    if (!s?.x || !t?.x) return
 
-    const srcColor: string = src.color || '#888'
-    const tgtColor: string = tgt.color || '#888'
+    // Derive color by index from CLUSTER_COLORS using numeric id mod
+    const sc = CLUSTER_COLORS[(s.numId || 0) % CLUSTER_COLORS.length]
+    const tc = CLUSTER_COLORS[(t.numId || 0) % CLUSTER_COLORS.length]
 
-    const isActive = hoveredId !== null && (src.id === hoveredId || tgt.id === hoveredId)
+    const isActive = hoveredId !== null && (s.id === hoveredId || t.id === hoveredId)
     const isDimmed = hoveredId !== null && !isActive
+    ctx.globalAlpha = isDimmed ? 0.04 : 0.45
 
-    ctx.globalAlpha = isDimmed ? 0.04 : link.linkType === 'topic-topic' ? 0.5 : 0.15
+    const grad = ctx.createLinearGradient(s.x, s.y, t.x, t.y)
+    grad.addColorStop(0, sc + '50')
+    grad.addColorStop(1, tc + '50')
 
-    if (link.linkType === 'topic-topic') {
-      const grad = ctx.createLinearGradient(src.x, src.y, tgt.x, tgt.y)
-      grad.addColorStop(0, srcColor)
-      grad.addColorStop(1, tgtColor)
-      ctx.beginPath()
-      ctx.moveTo(src.x, src.y)
-      ctx.lineTo(tgt.x, tgt.y)
-      ctx.strokeStyle = grad
-      ctx.lineWidth   = Math.max(0.5, (link.similarity || 0.5) * 1.5)
-      ctx.stroke()
-    } else {
-      ctx.beginPath()
-      ctx.moveTo(src.x, src.y)
-      ctx.lineTo(tgt.x, tgt.y)
-      ctx.strokeStyle = srcColor
-      ctx.lineWidth   = 0.5
-      ctx.stroke()
-    }
+    ctx.beginPath()
+    ctx.moveTo(s.x, s.y)
+    ctx.lineTo(t.x, t.y)
+    ctx.strokeStyle = grad
+    ctx.lineWidth   = Math.max(0.5, (link.weight || 0.5) * 2)
+    ctx.stroke()
 
     ctx.globalAlpha = 1
   }, [hoveredId])
 
   const paintBackground = useCallback((ctx: CanvasRenderingContext2D) => {
-    const canvas = ctx.canvas
-    const w = canvas.width
-    const h = canvas.height
+    const w = ctx.canvas.width
+    const h = ctx.canvas.height
     ctx.fillStyle = '#07070e'
     ctx.fillRect(0, 0, w, h)
-
-    // Star field
     for (const s of starsRef.current) {
       ctx.beginPath()
       ctx.arc(s.x * w, s.y * h, s.r, 0, Math.PI * 2)
@@ -438,24 +302,26 @@ export default function TopicsPage() {
 
   // ── Node interaction ────────────────────────────────────────────────────────
 
-  const handleNodeClick = useCallback((node: any) => {
-    const n: GraphNode = node
-    if (n.nodeType === 'doc') {
-      window.open(`/document/${(n as DocNode).docId}`, '_blank')
-    } else {
-      const t = n as TopicNode
-      setSelectedTopic(prev => prev?.id === t.id ? null : t)
-    }
-  }, [])
+  const handleNodeClick = useCallback(async (node: any) => {
+    const n = node as ConceptNode
+    if (selectedNode?.id === n.id) { setSelectedNode(null); return }
+    setSelectedNode(n)
+    setPanelChunks([])
+    setPanelLoading(true)
+    try {
+      const data = await authFetch(`/concepts/${n.numId}/chunks`)
+      setPanelChunks(Array.isArray(data) ? data : [])
+    } catch { setPanelChunks([]) }
+    finally { setPanelLoading(false) }
+  }, [selectedNode])
 
   const handleNodeHover = useCallback((node: any) => {
-    setHoveredId(node ? (node as GraphNode).id : null)
+    setHoveredId(node ? (node as ConceptNode).id : null)
   }, [])
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
-  const topicList = selectedTopic ? (topicDocsMap[selectedTopic.id] || []) : []
-  const selectedColor = selectedTopic ? colorMap[selectedTopic.id] : 'var(--accent)'
+  const selectedColor = selectedNode ? (colorMap[selectedNode.id] || '#a89bff') : '#a89bff'
 
   return (
     <div style={{
@@ -467,10 +333,10 @@ export default function TopicsPage() {
       color: '#e8e8f0',
     }}>
       <style>{`
-        @keyframes spin { to { transform: rotate(360deg) } }
-        @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
-        @keyframes slideInRight { from { transform: translateX(100%) } to { transform: translateX(0) } }
-        @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.4 } }
+        @keyframes spin    { to { transform: rotate(360deg) } }
+        @keyframes fadeIn  { from { opacity: 0 } to { opacity: 1 } }
+        @keyframes slideIn { from { transform: translateX(100%) } to { transform: translateX(0) } }
+        @keyframes pulse   { 0%,100% { opacity:1 } 50% { opacity:0.4 } }
       `}</style>
 
       {/* Graph canvas */}
@@ -481,32 +347,29 @@ export default function TopicsPage() {
           width={dims.w}
           height={dims.h}
 
-          // Rendering
           nodeCanvasObject={paintNode}
           nodePointerAreaPaint={paintNodePointer}
           linkCanvasObject={paintLink}
           linkCanvasObjectMode={() => 'replace'}
           onRenderFramePre={paintBackground}
 
-          // Forces
           d3AlphaDecay={0.015}
           d3VelocityDecay={0.25}
           cooldownTicks={300}
           warmupTicks={50}
           onEngineStop={() => setGraphReady(true)}
 
-          // Interaction
           onNodeClick={handleNodeClick}
           onNodeHover={handleNodeHover}
-          onBackgroundClick={() => setSelectedTopic(null)}
-          nodeLabel={(n: any) => (n as GraphNode).nodeType === 'doc' ? (n as DocNode).name : ''}
+          onBackgroundClick={() => setSelectedNode(null)}
+          nodeLabel={(n: any) => (n as ConceptNode).description || ''}
         />
       )}
 
       {/* ── Floating controls (top-left) ─────────────────────────────── */}
       <div style={{
         position: 'absolute', top: 20, left: 20,
-        background: 'rgba(10,10,18,0.75)',
+        background: 'rgba(10,10,18,0.78)',
         backdropFilter: 'blur(18px)',
         WebkitBackdropFilter: 'blur(18px)',
         border: '1px solid rgba(255,255,255,0.08)',
@@ -514,11 +377,11 @@ export default function TopicsPage() {
         padding: '14px 18px',
         display: 'flex', flexDirection: 'column', gap: 10,
         zIndex: 30,
-        minWidth: 210,
-        animation: 'fadeIn 0.5s ease',
+        minWidth: 220,
+        animation: 'fadeIn 0.4s ease',
       }}>
-        {/* Title row */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        {/* Title + status dot */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
           <div style={{
             width: 8, height: 8, borderRadius: '50%',
             background: graphReady ? '#34d399' : '#facc15',
@@ -529,31 +392,30 @@ export default function TopicsPage() {
           <span style={{ fontSize: 13, fontWeight: 600, letterSpacing: '-0.2px' }}>Knowledge Galaxy</span>
         </div>
 
-        {/* Stats */}
-        {graphData.nodes.length > 0 && (
-          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', lineHeight: 1.7 }}>
-            {graphData.nodes.filter(n => n.nodeType === 'topic').length} topics ·{' '}
-            {graphData.nodes.filter(n => n.nodeType === 'doc').length} documents
+        {/* Live stats */}
+        {statsText && (
+          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', lineHeight: 1.7 }}>
+            {statsText}
           </div>
         )}
 
-        {/* Rebuild button */}
+        {/* Build button */}
         <button
-          onClick={handleRebuild}
-          disabled={rebuilding || loading}
+          onClick={handleBuild}
+          disabled={building || loading}
           style={{
             padding: '7px 0',
-            background: (rebuilding || loading) ? 'rgba(120,100,240,0.25)' : 'rgba(124,106,247,0.18)',
-            border: '1px solid rgba(124,106,247,0.35)',
+            background: (building || loading) ? 'rgba(120,100,240,0.2)' : 'rgba(124,106,247,0.15)',
+            border: '1px solid rgba(124,106,247,0.3)',
             borderRadius: 9,
-            color: (rebuilding || loading) ? 'rgba(160,148,255,0.6)' : '#a89bff',
+            color: (building || loading) ? 'rgba(160,148,255,0.5)' : '#a89bff',
             fontSize: 12, fontWeight: 500,
-            cursor: (rebuilding || loading) ? 'not-allowed' : 'pointer',
+            cursor: (building || loading) ? 'not-allowed' : 'pointer',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
             transition: 'all 0.15s',
           }}
         >
-          {rebuilding && (
+          {building && (
             <div style={{
               width: 11, height: 11,
               border: '2px solid rgba(160,148,255,0.3)',
@@ -562,61 +424,42 @@ export default function TopicsPage() {
               animation: 'spin 0.7s linear infinite',
             }} />
           )}
-          {rebuilding ? 'Rebuilding…' : 'Rebuild Galaxy'}
+          {building ? 'Building…' : 'Build Graph'}
         </button>
 
         {/* Back link */}
         <Link href="/">
-          <div style={{
-            fontSize: 11.5, color: 'rgba(255,255,255,0.3)',
-            textAlign: 'center', cursor: 'pointer',
-            transition: 'color 0.15s',
-          }}
+          <div
+            style={{ fontSize: 11.5, color: 'rgba(255,255,255,0.28)', textAlign: 'center', cursor: 'pointer', transition: 'color 0.15s' }}
             onMouseOver={e => e.currentTarget.style.color = 'rgba(255,255,255,0.6)'}
-            onMouseOut={e => e.currentTarget.style.color = 'rgba(255,255,255,0.3)'}
+            onMouseOut={e => e.currentTarget.style.color = 'rgba(255,255,255,0.28)'}
           >
             ← Back to home
           </div>
         </Link>
       </div>
 
-      {/* ── Overlays (loading / error / empty) ──────────────────────── */}
-      {(loading || autoMsg) && (
+      {/* ── Overlays ─────────────────────────────────────────────────── */}
+      {loading && (
         <div style={{
           position: 'absolute', inset: 0,
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
           gap: 16, zIndex: 40,
-          background: 'rgba(7,7,14,0.75)',
+          background: 'rgba(7,7,14,0.7)',
           backdropFilter: 'blur(4px)',
           animation: 'fadeIn 0.3s ease',
         }}>
-          <div style={{
-            width: 28, height: 28,
-            border: '2px solid rgba(124,106,247,0.3)',
-            borderTopColor: '#a89bff',
-            borderRadius: '50%',
-            animation: 'spin 0.8s linear infinite',
-          }} />
-          <p style={{ fontSize: 14, color: 'rgba(255,255,255,0.6)', margin: 0, maxWidth: 320, textAlign: 'center', lineHeight: 1.6 }}>
-            {autoMsg || 'Loading…'}
-          </p>
+          <div style={{ width: 28, height: 28, border: '2px solid rgba(124,106,247,0.3)', borderTopColor: '#a89bff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+          <p style={{ fontSize: 14, color: 'rgba(255,255,255,0.5)', margin: 0 }}>Loading galaxy…</p>
         </div>
       )}
 
       {error && !loading && (
-        <div style={{
-          position: 'absolute', inset: 0,
-          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-          gap: 10, zIndex: 40,
-        }}>
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, zIndex: 40 }}>
           <span style={{ fontSize: 14, color: '#f87171' }}>{error}</span>
           <button
-            onClick={loadWithAutoRebuild}
-            style={{
-              padding: '7px 18px', background: 'rgba(248,113,113,0.15)',
-              border: '1px solid rgba(248,113,113,0.3)', borderRadius: 8,
-              color: '#f87171', fontSize: 12, cursor: 'pointer',
-            }}
+            onClick={loadGraph}
+            style={{ padding: '7px 18px', background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 8, color: '#f87171', fontSize: 12, cursor: 'pointer' }}
           >
             Retry
           </button>
@@ -624,31 +467,24 @@ export default function TopicsPage() {
       )}
 
       {noData && !loading && !error && (
-        <div style={{
-          position: 'absolute', inset: 0,
-          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-          gap: 10, zIndex: 40,
-          animation: 'fadeIn 0.4s ease',
-        }}>
-          <p style={{ fontSize: 16, color: 'rgba(255,255,255,0.4)', margin: 0 }}>No topics yet</p>
-          <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.2)', margin: 0 }}>
-            Capture some pages, then rebuild the galaxy.
-          </p>
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, zIndex: 40, animation: 'fadeIn 0.4s ease' }}>
+          <p style={{ fontSize: 16, color: 'rgba(255,255,255,0.35)', margin: 0 }}>No concepts yet</p>
+          <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.2)', margin: 0 }}>Capture some pages then click Build Graph.</p>
         </div>
       )}
 
-      {/* ── Topic detail panel (right side) ─────────────────────────── */}
-      {selectedTopic && (
+      {/* ── Concept detail panel (right side) ───────────────────────── */}
+      {selectedNode && (
         <div style={{
           position: 'absolute', right: 0, top: 0, bottom: 0,
           width: 300,
-          background: 'rgba(10,10,18,0.82)',
+          background: 'rgba(10,10,18,0.84)',
           backdropFilter: 'blur(22px)',
           WebkitBackdropFilter: 'blur(22px)',
           borderLeft: '1px solid rgba(255,255,255,0.07)',
           zIndex: 35,
           display: 'flex', flexDirection: 'column',
-          animation: 'slideInRight 0.22s ease',
+          animation: 'slideIn 0.22s ease',
           overflowY: 'auto',
         }}>
           {/* Color accent strip */}
@@ -658,27 +494,20 @@ export default function TopicsPage() {
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
               <div>
-                <div style={{
-                  fontSize: 10, fontWeight: 700, letterSpacing: '0.08em',
-                  color: selectedColor, textTransform: 'uppercase', marginBottom: 5,
-                }}>Topic</div>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', color: selectedColor, textTransform: 'uppercase', marginBottom: 5 }}>Concept</div>
                 <div style={{ fontSize: 17, fontWeight: 600, lineHeight: 1.3, color: '#f0f0ff' }}>
-                  {selectedTopic.name}
+                  {selectedNode.name}
                 </div>
               </div>
               <button
-                onClick={() => setSelectedTopic(null)}
-                style={{
-                  background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)',
-                  fontSize: 22, cursor: 'pointer', lineHeight: 1, padding: '2px 4px',
-                  flexShrink: 0,
-                }}
+                onClick={() => setSelectedNode(null)}
+                style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)', fontSize: 22, cursor: 'pointer', lineHeight: 1, padding: '2px 4px', flexShrink: 0 }}
               >×</button>
             </div>
 
-            {selectedTopic.description && (
-              <p style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.45)', lineHeight: 1.65, margin: '0 0 16px' }}>
-                {selectedTopic.description}
+            {selectedNode.description && (
+              <p style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.4)', lineHeight: 1.65, margin: '0 0 14px' }}>
+                {selectedNode.description}
               </p>
             )}
 
@@ -688,75 +517,58 @@ export default function TopicsPage() {
               padding: '4px 10px',
               background: `${selectedColor}18`,
               border: `1px solid ${selectedColor}33`,
-              borderRadius: 20,
-              marginBottom: 20,
+              borderRadius: 20, marginBottom: 20,
             }}>
               <div style={{ width: 6, height: 6, borderRadius: '50%', background: selectedColor }} />
               <span style={{ fontSize: 11.5, color: selectedColor }}>
-                {selectedTopic.chunk_count} chunk{selectedTopic.chunk_count !== 1 ? 's' : ''}
+                {selectedNode.chunk_count} chunk{selectedNode.chunk_count !== 1 ? 's' : ''}
               </span>
             </div>
 
-            {/* Documents */}
-            {topicList.length > 0 && (
-              <div>
-                <div style={{
-                  fontSize: 10.5, fontWeight: 700, letterSpacing: '0.07em',
-                  textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)',
-                  marginBottom: 10,
-                }}>Documents</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {topicList.map(doc => (
-                    <Link key={doc.id} href={`/document/${doc.id}`}>
-                      <div
-                        style={{
-                          padding: '10px 14px',
-                          background: 'rgba(255,255,255,0.04)',
-                          border: '1px solid rgba(255,255,255,0.07)',
-                          borderRadius: 10,
-                          cursor: 'pointer',
-                          transition: 'background 0.15s, border-color 0.15s',
-                        }}
-                        onMouseOver={e => {
-                          e.currentTarget.style.background = `${selectedColor}12`
-                          e.currentTarget.style.borderColor = `${selectedColor}33`
-                        }}
-                        onMouseOut={e => {
-                          e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
-                          e.currentTarget.style.borderColor = 'rgba(255,255,255,0.07)'
-                        }}
-                      >
-                        <div style={{ fontSize: 12.5, fontWeight: 500, color: '#e0e0f5', lineHeight: 1.4, marginBottom: doc.excerpt ? 4 : 0 }}>
-                          {doc.title || 'Untitled'}
-                        </div>
-                        {doc.excerpt && (
-                          <div style={{ fontSize: 11.5, color: 'rgba(255,255,255,0.3)', lineHeight: 1.5 }}>
-                            {doc.excerpt.slice(0, 80)}{doc.excerpt.length > 80 ? '…' : ''}
-                          </div>
-                        )}
-                      </div>
-                    </Link>
-                  ))}
-                </div>
+            {/* Relevant chunks */}
+            <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)', marginBottom: 10 }}>
+              Relevant Chunks
+            </div>
+
+            {panelLoading && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'rgba(255,255,255,0.3)', fontSize: 12 }}>
+                <div style={{ width: 12, height: 12, border: '2px solid rgba(255,255,255,0.15)', borderTopColor: selectedColor, borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+                Loading…
               </div>
             )}
 
-            {topicList.length === 0 && !selectedTopic.is_single && (
-              <p style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.25)', margin: 0 }}>No documents found for this topic.</p>
+            {!panelLoading && panelChunks.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {panelChunks.map((c, i) => (
+                  <Link key={i} href={`/document/${c.document_id}`}>
+                    <div
+                      style={{ padding: '10px 13px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 9, cursor: 'pointer', transition: 'background 0.15s, border-color 0.15s' }}
+                      onMouseOver={e => { e.currentTarget.style.background = `${selectedColor}10`; e.currentTarget.style.borderColor = `${selectedColor}30` }}
+                      onMouseOut={e =>  { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.07)' }}
+                    >
+                      <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', lineHeight: 1.6 }}>
+                        {c.chunk.length > 160 ? c.chunk.slice(0, 158) + '…' : c.chunk}
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 10.5, color: selectedColor, opacity: 0.7 }}>
+                        Doc #{c.document_id} →
+                      </div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            )}
+
+            {!panelLoading && panelChunks.length === 0 && (
+              <p style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.2)', margin: 0 }}>No chunks found for this concept.</p>
             )}
           </div>
         </div>
       )}
 
-      {/* Hint text (bottom-left, fades in after graph settles) */}
+      {/* Hint text */}
       {graphReady && graphData.nodes.length > 0 && (
-        <div style={{
-          position: 'absolute', bottom: 18, left: 20,
-          fontSize: 11, color: 'rgba(255,255,255,0.18)',
-          pointerEvents: 'none',
-          animation: 'fadeIn 1s ease',
-        }}>
-          Click topic node to inspect · Click doc node to open · Scroll to zoom · Drag to explore
+        <div style={{ position: 'absolute', bottom: 18, left: 20, fontSize: 11, color: 'rgba(255,255,255,0.15)', pointerEvents: 'none', animation: 'fadeIn 1s ease' }}>
+          Click node to inspect · Scroll to zoom · Drag to explore
         </div>
       )}
     </div>

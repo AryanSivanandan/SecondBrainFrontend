@@ -207,6 +207,7 @@ function Dashboard({ session }: { session: any }) {
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [gaps, setGaps]                 = useState<Gap[]>([]);
   const [loading, setLoading]           = useState(false);
+  const [streaming, setStreaming]       = useState(false);
   const [feedLoading, setFeedLoading]   = useState(true);
   const [discoverLoading, setDiscoverLoading] = useState(false);
   const [mode, setMode]                 = useState<"feed" | "search">("feed");
@@ -310,14 +311,58 @@ function Dashboard({ session }: { session: any }) {
   const handleSearch = async (queryOverride?: string) => {
     const q = queryOverride ?? query;
     if (!q.trim()) return;
-    setLoading(true); setMode("search"); setAnswer(""); setResults([]);
+    setLoading(true);
+    setStreaming(false);
+    setMode("search");
+    setAnswer("");
+    setResults([]);
+
     try {
-      const res  = await authFetch(`${BACKEND}/answer`, { method: "POST", body: JSON.stringify({ query: q }) });
-      const data = await res.json();
-      setAnswer(data.answer || "");
-      setResults(data.sources || []);
+      const { data: { session } } = await supabase.auth.getSession();
+      const response = await fetch(`${BACKEND}/answer/stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session?.access_token ?? ""}`,
+        },
+        body: JSON.stringify({ query: q }),
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error(`${response.status}`);
+      }
+
+      setLoading(false);   // spinner off — connection is open
+      setStreaming(true);  // skeleton on until first token
+
+      const reader  = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer    = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() ?? "";
+        for (const part of parts) {
+          if (!part.startsWith("data: ")) continue;
+          try {
+            const ev = JSON.parse(part.slice(6));
+            if (ev.type === "sources") {
+              setResults(ev.sources || []);
+            } else if (ev.type === "token") {
+              setStreaming(false);
+              setAnswer(prev => prev + ev.token);
+            } else if (ev.type === "done") {
+              // ev.answer only present when there were no chunks
+              if (ev.answer) setAnswer(ev.answer);
+            }
+          } catch { /* ignore malformed SSE line */ }
+        }
+      }
     } catch (e) { console.error(e); }
-    finally { setLoading(false); }
+    finally { setLoading(false); setStreaming(false); }
   };
 
   // Handle ?q= param from Topics "Explore →" links
@@ -426,18 +471,30 @@ function Dashboard({ session }: { session: any }) {
                 </div>
               )}
 
-              {answer && (
+              {/* Answer card — shows skeleton while streaming hasn't started, then streams in */}
+              {(streaming || answer) && (
                 <div className="card fade-up" style={{ padding: "22px 24px", marginBottom: "24px", background: "linear-gradient(135deg, rgba(124,106,247,0.06) 0%, var(--surface) 100%)", borderColor: "var(--accent-border)" }}>
-                  {/* Answer header */}
                   <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
                     <div style={{ width: "22px", height: "22px", background: "var(--accent-dim)", border: "1px solid var(--accent-border)", borderRadius: "6px", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent)" }}>
                       <IconBrain />
                     </div>
                     <span style={{ fontSize: "10.5px", fontWeight: 700, color: "var(--accent)", letterSpacing: "0.09em", textTransform: "uppercase" }}>Answer</span>
                   </div>
-                  <div className="md" style={{ fontSize: "15px", lineHeight: 1.8, color: "var(--text-1)" }}>
-                    <ReactMarkdown>{answer}</ReactMarkdown>
-                  </div>
+
+                  {/* Skeleton bars while waiting for first token */}
+                  {streaming && !answer && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                      {[85, 72, 55].map((w, i) => (
+                        <div key={i} style={{ height: "13px", width: `${w}%`, borderRadius: "6px", background: "var(--surface-2, rgba(255,255,255,0.06))", animation: `skeletonPulse 1.4s ease ${i * 0.15}s infinite` }} />
+                      ))}
+                    </div>
+                  )}
+
+                  {answer && (
+                    <div className="md" style={{ fontSize: "15px", lineHeight: 1.8, color: "var(--text-1)" }}>
+                      <ReactMarkdown>{answer}</ReactMarkdown>
+                    </div>
+                  )}
                 </div>
               )}
 
