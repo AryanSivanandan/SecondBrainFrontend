@@ -5,501 +5,420 @@ import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 
-// react-force-graph-2d requires canvas — SSR must be disabled
 const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), { ssr: false })
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface ChunkNode {
-  id: string
-  numId: number
-  label: string
-  preview: string
-  document_id: number
-  document_title: string
-  chunk_index: number
-  edge_count: number
-  tier: 'hub' | 'connected' | 'satellite' | 'isolated'
-  size: number
-  concept_id: number | null
-  source_type: string
-  color: string
-  x?: number
-  y?: number
-}
-
-interface ChunkLink {
-  source: string
-  target: string
-  weight: number
-}
-
-interface GraphData {
-  nodes: ChunkNode[]
-  links: ChunkLink[]
-}
-
-interface GraphStats {
-  total_chunks: number
-  visible_nodes: number
-  hub_count: number
-  edge_count: number
-}
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-
 const BACKEND = '/api'
-
-const DOC_COLORS = [
-  '#22d3ee', // cyan
-  '#a3e635', // chartreuse
-  '#fb923c', // coral
-  '#facc15', // yellow
-  '#a78bfa', // purple
-  '#34d399', // mint
-  '#f97316', // orange
-  '#c084fc', // lavender
-  '#f472b6', // pink
-  '#2dd4bf', // teal
-  '#60a5fa', // blue
-  '#e879f9', // fuchsia
+const COLORS = [
+  '#22d3ee','#a3e635','#fb923c','#facc15','#a78bfa',
+  '#34d399','#f97316','#c084fc','#f472b6','#2dd4bf',
+  '#60a5fa','#4ade80','#fbbf24','#e879f9','#38bdf8',
 ]
-
-// ─── Auth helper ──────────────────────────────────────────────────────────────
 
 async function authFetch(path: string, options: RequestInit = {}) {
   const { data: { session } } = await supabase.auth.getSession()
   if (!session) throw new Error('Not authenticated')
-  const res = await fetch(`${BACKEND}${path}`, {
+  return fetch(`${BACKEND}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${session.access_token}`,
       ...options.headers,
     },
-  })
-  if (!res.ok) throw new Error(`${path} → ${res.status}`)
-  return res.json()
+  }).then(r => r.json())
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
-
-export default function TopicsPage() {
-  const graphRef = useRef<any>(null)
+export default function GraphPage() {
+  const fgRef     = useRef<any>(null)
+  const starsRef  = useRef<any[]>([])
   const hasZoomed = useRef(false)
-  const starsRef = useRef<{ x: number; y: number; r: number; a: number }[]>([])
 
-  const [graphData, setGraphData] = useState<GraphData>({ nodes: [], links: [] })
-  const [stats, setStats] = useState<GraphStats | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [selectedChunk, setSelectedChunk] = useState<ChunkNode | null>(null)
-  const [building, setBuilding] = useState(false)
-  const [buildMsg, setBuildMsg] = useState<string | null>(null)
+  const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] })
+  const [stats, setStats]         = useState<any>({})
+  const [loading, setLoading]     = useState(true)
+  const [building, setBuilding]   = useState(false)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const [selected, setSelected]   = useState<any>(null)
+  const [dims, setDims]           = useState({ w: 0, h: 0 })
+  const [mousePos, setMousePos]   = useState({ x: 0, y: 0 })
+  const [tooltip, setTooltip]     = useState<any>(null)
 
-  // Stars — generated once
   useEffect(() => {
-    starsRef.current = Array.from({ length: 300 }, () => ({
-      x: (Math.random() - 0.5) * 4000,
-      y: (Math.random() - 0.5) * 4000,
-      r: Math.random() * 1.2 + 0.3,
-      a: Math.random() * 0.6 + 0.2,
-    }))
+    const upd = () => setDims({ w: window.innerWidth, h: window.innerHeight })
+    upd()
+    window.addEventListener('resize', upd)
+    return () => window.removeEventListener('resize', upd)
   }, [])
 
-  const loadGraph = useCallback(async () => {
+  const load = useCallback(async () => {
     setLoading(true)
-    setError(null)
     hasZoomed.current = false
     try {
-      const data = await authFetch('/chunks/graph')
+      const data = await authFetch('/documents/graph')
+      const rawNodes: any[] = data.nodes || []
+      const rawEdges: any[] = data.edges || []
 
-      // Build doc → color map
-      const docIds: number[] = Array.from(new Set(
-        (data.nodes as any[]).map((n: any) => n.document_id)
-      ))
-      const docColorMap = new Map<number, string>()
-      docIds.forEach((id, i) => {
-        docColorMap.set(id, DOC_COLORS[i % DOC_COLORS.length])
+      const domainColors: Record<string, string> = {}
+      const docColorMap: Record<number, string>  = {}
+      let ci = 0
+      rawNodes.filter(n => n.type === 'document').forEach(n => {
+        const d = n.domain || 'unknown'
+        if (!domainColors[d]) domainColors[d] = COLORS[ci++ % COLORS.length]
+        n.color = domainColors[d]
+        docColorMap[n.document_id] = n.color
+      })
+      rawNodes.filter(n => n.type === 'chunk').forEach(n => {
+        n.color = docColorMap[n.document_id] || '#6366f1'
       })
 
-      const nodes: ChunkNode[] = (data.nodes as any[]).map((n: any) => ({
-        id: String(n.id),
-        numId: n.id,
-        label: n.label ?? '',
-        preview: n.preview ?? '',
-        document_id: n.document_id,
-        document_title: n.document_title ?? '',
-        chunk_index: n.chunk_index ?? 0,
-        edge_count: n.edge_count ?? 0,
-        tier: n.tier ?? 'isolated',
-        size: n.size ?? 4,
-        concept_id: n.concept_id ?? null,
-        source_type: n.source_type ?? 'capture',
-        color: docColorMap.get(n.document_id) ?? '#94a3b8',
-      }))
-
-      const links: ChunkLink[] = (data.edges as any[]).map((e: any) => ({
-        source: String(e.source),
-        target: String(e.target),
-        weight: e.weight ?? 0.5,
-      }))
-
-      setGraphData({ nodes, links })
-      setStats(data.stats ?? null)
-    } catch (e: any) {
-      setError(e.message)
+      setGraphData({ nodes: rawNodes, links: rawEdges })
+      setStats(data.stats || {})
+    } catch (e) {
+      console.error(e)
     } finally {
       setLoading(false)
     }
   }, [])
 
-  useEffect(() => { loadGraph() }, [loadGraph])
+  useEffect(() => { load() }, [load])
 
-  const handleRebuild = async () => {
-    setBuilding(true)
-    setBuildMsg(null)
-    try {
-      const result = await authFetch('/concepts/build-edges-from-chunks', { method: 'POST' })
-      setBuildMsg(
-        `${result.edges_created ?? 0} edges · ${result.chunks_reassigned ?? 0} chunks reassigned`
+  const handleEngineStop = useCallback(() => {
+    if (fgRef.current && !hasZoomed.current) {
+      fgRef.current.zoomToFit(800, 80)
+      hasZoomed.current = true
+    }
+  }, [])
+
+  const applyForces = useCallback(() => {
+    const fg = fgRef.current
+    if (!fg) return
+    fg.d3Force('charge').strength((n: any) => n.is_hub ? -220 : -18)
+    fg.d3Force('link')
+      .distance((l: any) =>
+        l.type === 'parent'     ? 38 :
+        l.type === 'similarity' ? 220 :
+        90
       )
-      await loadGraph()
-    } catch (e: any) {
-      setBuildMsg(`Error: ${e.message}`)
+      .strength((l: any) =>
+        l.type === 'parent'     ? 0.92 :
+        l.type === 'similarity' ? 0.25 :
+        0.1
+      )
+    fg.d3ReheatSimulation()
+  }, [])
+
+  // Apply forces once graph data + ref are ready
+  useEffect(() => {
+    if (graphData.nodes.length === 0) return
+    const t = setTimeout(applyForces, 50)
+    return () => clearTimeout(t)
+  }, [graphData, applyForces])
+
+  const paintNode = useCallback((node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
+    const color = node.color || '#6366f1'
+    const isHub = node.is_hub
+    const isHov = node.id === hoveredId
+    const size  = isHub ? Math.max(10, Math.min(26, node.size || 12)) : (isHov ? 5 : 3)
+
+    if (isHub) {
+      ;([3.2, 2.2, 1.5] as number[]).forEach((mult, i) => {
+        ctx.beginPath()
+        ctx.arc(node.x, node.y, size * mult, 0, 2 * Math.PI)
+        ctx.fillStyle = color + ['0d','18','28'][i]
+        ctx.fill()
+      })
+    }
+
+    if (isHov) {
+      ctx.beginPath()
+      ctx.arc(node.x, node.y, size + 3, 0, 2 * Math.PI)
+      ctx.strokeStyle = color + 'cc'
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+    }
+
+    ctx.beginPath()
+    ctx.arc(node.x, node.y, size, 0, 2 * Math.PI)
+    ctx.fillStyle = isHub ? color : color + '70'
+    ctx.fill()
+
+    const showHub   = isHub && globalScale > 0.35
+    const showChunk = !isHub && (isHov || globalScale > 2.2)
+
+    if ((showHub || showChunk) && node.name) {
+      const fs  = isHub
+        ? Math.max(9, Math.min(14, 12 / globalScale))
+        : Math.max(7, 9 / globalScale)
+      ctx.font  = `${isHub ? '500' : '400'} ${fs}px system-ui`
+      const raw = isHub
+        ? node.name.slice(0, 32)
+        : node.name.split(' ').slice(0, 6).join(' ') + '…'
+      const tw  = ctx.measureText(raw).width
+      const tx  = node.x
+      const ty  = node.y + size + 4
+      ctx.fillStyle = 'rgba(6,6,12,0.85)'
+      ctx.fillRect(tx - tw / 2 - 4, ty, tw + 8, fs + 5)
+      ctx.fillStyle = isHub ? 'rgba(255,255,255,0.95)' : 'rgba(200,200,220,0.7)'
+      ctx.textAlign = 'center'
+      ctx.fillText(raw, tx, ty + fs + 1)
+    }
+  }, [hoveredId])
+
+  const paintLink = useCallback((link: any, ctx: CanvasRenderingContext2D) => {
+    const s = link.source as any
+    const t = link.target as any
+    if (s?.x == null || s?.y == null || t?.x == null || t?.y == null) return
+
+    ctx.beginPath()
+    ctx.moveTo(s.x, s.y)
+    ctx.lineTo(t.x, t.y)
+
+    if (link.type === 'parent') {
+      ctx.strokeStyle = (s.color || t.color || '#6366f1') + '28'
+      ctx.lineWidth   = 0.6
+      ctx.setLineDash([])
+    } else if (link.type === 'similarity') {
+      const g = ctx.createLinearGradient(s.x, s.y, t.x, t.y)
+      g.addColorStop(0, (s.color || '#6366f1') + 'aa')
+      g.addColorStop(1, (t.color || '#6366f1') + 'aa')
+      ctx.strokeStyle = g
+      ctx.lineWidth   = Math.max(1.2, (link.weight || 0.5) * 3.5)
+      ctx.setLineDash([])
+    } else {
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)'
+      ctx.lineWidth   = 0.8
+      ctx.setLineDash([3, 5])
+    }
+    ctx.stroke()
+    ctx.setLineDash([])
+  }, [])
+
+  const paintBg = useCallback((ctx: CanvasRenderingContext2D) => {
+    if (!starsRef.current.length) {
+      starsRef.current = Array.from({ length: 180 }, () => ({
+        x: (Math.random() - 0.5) * 5000,
+        y: (Math.random() - 0.5) * 5000,
+        r: Math.random() * 0.9 + 0.15,
+        a: Math.random() * 0.35 + 0.05,
+      }))
+    }
+    starsRef.current.forEach((s: any) => {
+      ctx.beginPath()
+      ctx.arc(s.x, s.y, s.r, 0, 2 * Math.PI)
+      ctx.fillStyle = `rgba(255,255,255,${s.a})`
+      ctx.fill()
+    })
+  }, [])
+
+  const handleNodeHover = useCallback((node: any) => {
+    setHoveredId(node ? String(node.id) : null)
+    if (node) {
+      setTooltip({
+        name:        node.name,
+        type:        node.type,
+        preview:     node.preview || node.excerpt || '',
+        doc_title:   node.doc_title || '',
+        document_id: node.document_id,
+      })
+    } else {
+      setTooltip(null)
+    }
+    document.body.style.cursor = node ? 'pointer' : 'default'
+  }, [])
+
+  const handleNodeClick = useCallback((node: any) => {
+    setSelected(node)
+  }, [])
+
+  const rebuild = async () => {
+    setBuilding(true)
+    try {
+      await authFetch('/concepts/build-edges-from-chunks', { method: 'POST' })
+      await load()
     } finally {
       setBuilding(false)
     }
   }
 
-  // ── Node painter ──────────────────────────────────────────────────────────
-
-  const paintNode = useCallback((node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
-    const chunk = node as ChunkNode
-    const x = node.x as number
-    const y = node.y as number
-
-    const tierRadius: Record<string, number> = {
-      hub: 9,
-      connected: 6,
-      satellite: 4,
-      isolated: 3,
-    }
-    const r = tierRadius[chunk.tier] ?? 4
-
-    // Glow for hubs
-    if (chunk.tier === 'hub') {
-      const grd = ctx.createRadialGradient(x, y, r * 0.5, x, y, r * 2.5)
-      grd.addColorStop(0, chunk.color + 'aa')
-      grd.addColorStop(1, chunk.color + '00')
-      ctx.beginPath()
-      ctx.arc(x, y, r * 2.5, 0, Math.PI * 2)
-      ctx.fillStyle = grd
-      ctx.fill()
-    }
-
-    // Node circle
-    ctx.beginPath()
-    ctx.arc(x, y, r, 0, Math.PI * 2)
-    ctx.fillStyle = chunk.color
-    ctx.shadowColor = chunk.color
-    ctx.shadowBlur = chunk.tier === 'hub' ? 12 : chunk.tier === 'connected' ? 6 : 0
-    ctx.fill()
-    ctx.shadowBlur = 0
-
-    // Label — only show at sufficient zoom
-    if (globalScale > 1.2 && chunk.tier !== 'isolated') {
-      const label = chunk.label.length > 30 ? chunk.label.slice(0, 28) + '…' : chunk.label
-      const fontSize = Math.max(8, 11 / globalScale)
-      ctx.font = `${fontSize}px Inter, sans-serif`
-      const tw = ctx.measureText(label).width
-      const pad = 3
-
-      ctx.fillStyle = 'rgba(10,10,20,0.75)'
-      ctx.fillRect(x + r + 2, y - fontSize / 2 - pad, tw + pad * 2, fontSize + pad * 2)
-
-      ctx.fillStyle = '#e2e8f0'
-      ctx.fillText(label, x + r + 2 + pad, y + fontSize / 2 - 1)
-    }
-  }, [])
-
-  // ── Link painter ──────────────────────────────────────────────────────────
-
-  const paintLink = useCallback((link: any, ctx: CanvasRenderingContext2D) => {
-    const w = link.weight as number
-    const src = link.source as ChunkNode
-    const tgt = link.target as ChunkNode
-    if (src.x == null || src.y == null || tgt.x == null || tgt.y == null) return
-    const sx = src.x, sy = src.y, tx = tgt.x, ty = tgt.y
-
-    const grd = ctx.createLinearGradient(sx, sy, tx, ty)
-    grd.addColorStop(0, src.color + 'cc')
-    grd.addColorStop(1, tgt.color + 'cc')
-
-    ctx.beginPath()
-    ctx.moveTo(sx, sy)
-    ctx.lineTo(tx, ty)
-    ctx.strokeStyle = grd
-
-    if (w >= 0.9) {
-      ctx.lineWidth = 2.2
-      ctx.setLineDash([])
-      ctx.globalAlpha = 0.85
-    } else if (w >= 0.8) {
-      ctx.lineWidth = 1.3
-      ctx.setLineDash([])
-      ctx.globalAlpha = 0.55
-    } else {
-      ctx.lineWidth = 1.0
-      ctx.setLineDash([3, 5])
-      ctx.globalAlpha = 0.35
-    }
-
-    ctx.stroke()
-    ctx.setLineDash([])
-    ctx.globalAlpha = 1
-  }, [])
-
-  // ── Star background ───────────────────────────────────────────────────────
-
-  const paintBackground = useCallback((ctx: CanvasRenderingContext2D) => {
-    for (const s of starsRef.current) {
-      ctx.beginPath()
-      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(255,255,255,${s.a})`
-      ctx.fill()
-    }
-  }, [])
-
-  // ── Zoom to fit once ──────────────────────────────────────────────────────
-
-  const handleEngineStop = useCallback(() => {
-    if (!hasZoomed.current && graphRef.current) {
-      graphRef.current.zoomToFit(600, 60)
-      hasZoomed.current = true
-    }
-  }, [])
-
-  // ── D3 force config ───────────────────────────────────────────────────────
-
-  const handleGraphReady = useCallback(() => {
-    if (!graphRef.current) return
-    const fg = graphRef.current
-
-    fg.d3Force('charge', null)
-
-    // Simpler: just use d3's forceManyBody with a moderate value
-    // then override per-node in nodeCanvasObject size — the charge above won't work
-    // directly as an object. Use proper d3 approach:
-    if (typeof window !== 'undefined') {
-      import('d3').then((d3) => {
-        fg.d3Force('charge', d3.forceManyBody().strength((node: any) => {
-          const t = (node as ChunkNode).tier
-          if (t === 'hub') return -180
-          if (t === 'connected') return -80
-          if (t === 'satellite') return -30
-          return -15
-        }))
-        fg.d3Force('link', d3.forceLink().id((n: any) => n.id).distance((link: any) => {
-          return 120 - (link.weight ?? 0.5) * 70
-        }).strength((link: any) => {
-          return (link.weight ?? 0.5) * 0.9
-        }))
-        fg.d3Force('center', d3.forceCenter(0, 0).strength(0.05))
-        fg.d3Force('collision', d3.forceCollide((node: any) => {
-          const t = (node as ChunkNode).tier
-          return t === 'hub' ? 22 : t === 'connected' ? 14 : 9
-        }))
-        fg.d3ReheatSimulation()
-      })
-    }
-  }, [])
-
-  // ─── Render ────────────────────────────────────────────────────────────────
+  if (dims.w === 0) return null
 
   return (
-    <div className="fixed inset-0 bg-[#080b14] overflow-hidden">
-
-      {/* Controls panel */}
-      <div className="absolute top-4 left-4 z-20 flex flex-col gap-2">
-        <Link
-          href="/"
-          className="text-xs text-slate-400 hover:text-white transition-colors"
-        >
-          ← Home
-        </Link>
-
-        <div className="bg-slate-900/80 backdrop-blur border border-slate-700/50 rounded-xl px-4 py-3 flex flex-col gap-2 min-w-[200px]">
-          <h1 className="text-sm font-semibold text-white tracking-wide">Knowledge Graph</h1>
-
-          {stats && (
-            <div className="text-[11px] text-slate-400 space-y-0.5">
-              <div>{stats.visible_nodes} chunks · {stats.edge_count} edges</div>
-              <div>{stats.hub_count} hubs · {stats.total_chunks} total</div>
-            </div>
-          )}
-
-          <button
-            onClick={handleRebuild}
-            disabled={building || loading}
-            className="mt-1 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg px-3 py-1.5 transition-colors flex items-center gap-1.5"
-          >
-            {building ? (
-              <>
-                <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                Rebuilding…
-              </>
-            ) : 'Rebuild Connections'}
-          </button>
-
-          {buildMsg && (
-            <div className="text-[10px] text-slate-400">{buildMsg}</div>
-          )}
-        </div>
-      </div>
-
-      {/* Loading / error overlay */}
-      {loading && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center">
-          <div className="flex flex-col items-center gap-3">
-            <div className="w-8 h-8 border-2 border-indigo-500/40 border-t-indigo-400 rounded-full animate-spin" />
-            <span className="text-slate-400 text-sm">Loading graph…</span>
-          </div>
-        </div>
-      )}
-
-      {error && !loading && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center">
-          <div className="bg-slate-900 border border-red-800/50 rounded-xl p-6 max-w-sm text-center space-y-3">
-            <div className="text-red-400 text-sm">{error}</div>
-            <button
-              onClick={loadGraph}
-              className="text-xs bg-slate-700 hover:bg-slate-600 text-white rounded-lg px-4 py-2"
-            >
-              Retry
-            </button>
-          </div>
-        </div>
-      )}
-
+    <div
+      style={{ position: 'fixed', inset: 0, background: '#060610', overflow: 'hidden' }}
+      onMouseMove={e => setMousePos({ x: e.clientX, y: e.clientY })}
+    >
       {/* Graph */}
-      {!loading && !error && (
+      {!loading && (
         <ForceGraph2D
-          ref={graphRef}
+          ref={fgRef}
+          width={dims.w}
+          height={dims.h}
           graphData={graphData}
-          backgroundColor="#080b14"
+          backgroundColor="#060610"
           nodeCanvasObject={paintNode}
           nodeCanvasObjectMode={() => 'replace'}
           linkCanvasObject={paintLink}
           linkCanvasObjectMode={() => 'replace'}
-          onRenderFramePre={paintBackground}
+          onRenderFramePre={paintBg}
+          onNodeHover={handleNodeHover}
+          onNodeClick={handleNodeClick}
           onEngineStop={handleEngineStop}
-          onNodeClick={(node) => setSelectedChunk(node as ChunkNode)}
-          onBackgroundClick={() => setSelectedChunk(null)}
-          nodeLabel={() => ''}
-          cooldownTicks={200}
-          onNodeDragEnd={(node) => {
-            // pin on drag
-            ;(node as any).fx = node.x
-            ;(node as any).fy = node.y
-          }}
+          d3AlphaDecay={0.012}
+          d3VelocityDecay={0.28}
+          cooldownTicks={400}
+          warmupTicks={80}
+          enableNodeDrag={true}
+          enableZoomInteraction={true}
         />
       )}
 
-      {/* Force config — fires after graph mounts */}
-      {!loading && !error && graphData.nodes.length > 0 && (
-        <ForceConfigRunner onReady={handleGraphReady} graphRef={graphRef} deps={graphData} />
+      {/* Loading overlay */}
+      {loading && (
+        <div style={{ position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 16 }}>
+          <div style={{ width: 32, height: 32, border: '2px solid #1a1a2e', borderTopColor: '#6366f1', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+          <p style={{ color: '#555', fontSize: 14, fontFamily: 'system-ui' }}>Building your knowledge galaxy...</p>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      )}
+
+      {/* Controls — top left */}
+      <div style={{
+        position: 'fixed', top: 20, left: 20, zIndex: 100,
+        background: 'rgba(6,6,16,0.88)', backdropFilter: 'blur(14px)',
+        border: '1px solid rgba(255,255,255,0.07)',
+        borderRadius: 14, padding: '14px 18px', minWidth: 210,
+        fontFamily: 'system-ui',
+      }}>
+        <Link href="/" style={{ fontSize: 12, color: '#555', textDecoration: 'none', display: 'block', marginBottom: 10 }}>← Home</Link>
+        <p style={{ color: '#f0f0f0', fontSize: 16, fontWeight: 600, margin: '0 0 4px', letterSpacing: '-0.3px' }}>Knowledge Graph</p>
+        <p style={{ color: '#444', fontSize: 12, margin: '0 0 12px' }}>
+          {stats.documents || 0} docs · {stats.chunks || 0} chunks · {stats.doc_connections || 0} connections
+        </p>
+        <button
+          onClick={rebuild}
+          disabled={building}
+          style={{
+            width: '100%', padding: '8px 14px',
+            background: building ? '#1a1a2e' : '#6366f1',
+            border: 'none', borderRadius: 8,
+            color: 'white', fontSize: 13, fontWeight: 500,
+            cursor: building ? 'not-allowed' : 'pointer',
+            fontFamily: 'inherit', opacity: building ? 0.6 : 1,
+          }}
+        >
+          {building ? 'Rebuilding…' : 'Rebuild Connections'}
+        </button>
+
+        {/* Legend */}
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 5 }}>
+          {[
+            { dot: true,  dotSize: 10, color: '#6366f1', glow: true,  label: 'Document hub' },
+            { dot: true,  dotSize: 6,  color: '#6366f155', glow: false, label: 'Chunk satellite' },
+          ].map(({ dotSize, color, glow, label }) => (
+            <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ width: dotSize, height: dotSize, borderRadius: '50%', background: color, flexShrink: 0, ...(glow ? { boxShadow: `0 0 6px ${color}88` } : {}) }} />
+              <span style={{ fontSize: 11, color: '#555' }}>{label}</span>
+            </div>
+          ))}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ width: 16, height: 1.5, background: 'linear-gradient(90deg, #6366f1, #22d3ee)', flexShrink: 0 }} />
+            <span style={{ fontSize: 11, color: '#555' }}>Doc connection</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ width: 16, height: 0, borderTop: '1px dashed rgba(255,255,255,0.3)', flexShrink: 0 }} />
+            <span style={{ fontSize: 11, color: '#555' }}>Cross-chunk link</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Hover tooltip */}
+      {tooltip && (
+        <div style={{
+          position: 'fixed',
+          left: mousePos.x + 16,
+          top: mousePos.y - 10,
+          zIndex: 200,
+          background: 'rgba(6,6,16,0.95)',
+          backdropFilter: 'blur(12px)',
+          border: '1px solid rgba(255,255,255,0.1)',
+          borderRadius: 10, padding: '10px 14px',
+          maxWidth: 260, pointerEvents: 'none',
+          fontFamily: 'system-ui',
+        }}>
+          <p style={{ fontSize: 12, fontWeight: 600, color: '#e0e0f0', margin: '0 0 4px' }}>
+            {tooltip.type === 'document' ? tooltip.name : tooltip.doc_title}
+          </p>
+          {tooltip.type === 'chunk' && (
+            <p style={{ fontSize: 11, color: '#888', margin: '0 0 4px' }}>chunk content:</p>
+          )}
+          <p style={{ fontSize: 11, color: '#666', margin: 0, lineHeight: 1.5 }}>
+            {(tooltip.preview || tooltip.name || '').slice(0, 120)}…
+          </p>
+        </div>
       )}
 
       {/* Side panel */}
-      <div
-        className="absolute top-0 right-0 h-full w-80 z-20 flex flex-col"
-        style={{
-          transform: selectedChunk ? 'translateX(0)' : 'translateX(100%)',
-          transition: 'transform 0.25s cubic-bezier(0.4,0,0.2,1)',
-        }}
-      >
-        <div className="flex-1 bg-slate-900/90 backdrop-blur border-l border-slate-700/50 overflow-y-auto p-5 flex flex-col gap-4">
-          {selectedChunk && (
-            <>
-              <div className="flex items-start justify-between gap-2">
-                <h2 className="text-sm font-semibold text-white leading-snug line-clamp-2">
-                  {selectedChunk.label}
-                </h2>
-                <button
-                  onClick={() => setSelectedChunk(null)}
-                  className="text-slate-500 hover:text-white shrink-0 mt-0.5"
-                >
-                  ✕
-                </button>
-              </div>
+      <div style={{
+        position: 'fixed', top: 0, right: 0,
+        height: '100vh', width: 300,
+        background: 'rgba(6,6,16,0.96)',
+        backdropFilter: 'blur(18px)',
+        borderLeft: '1px solid rgba(255,255,255,0.07)',
+        padding: '28px 22px',
+        overflowY: 'auto',
+        fontFamily: 'system-ui',
+        transform: selected ? 'translateX(0)' : 'translateX(100%)',
+        transition: 'transform 0.22s ease',
+        zIndex: 150,
+      }}>
+        {selected && (
+          <>
+            <button
+              onClick={() => setSelected(null)}
+              style={{ position: 'absolute', top: 18, right: 18, background: 'none', border: 'none', color: '#555', fontSize: 20, cursor: 'pointer', lineHeight: 1 }}
+            >×</button>
 
-              {/* Tier badge */}
-              <div className="flex items-center gap-2">
-                <span
-                  className="text-[10px] px-2 py-0.5 rounded-full font-medium uppercase tracking-wider"
-                  style={{
-                    background: selectedChunk.color + '33',
-                    color: selectedChunk.color,
-                    border: `1px solid ${selectedChunk.color}55`,
-                  }}
-                >
-                  {selectedChunk.tier}
-                </span>
-                <span className="text-[11px] text-slate-500">{selectedChunk.edge_count} connections</span>
-              </div>
+            <div style={{ width: 10, height: 10, borderRadius: '50%', background: selected.color || '#6366f1', boxShadow: `0 0 10px ${selected.color || '#6366f1'}88`, marginBottom: 12 }} />
 
-              {/* Preview */}
-              <p className="text-[12px] text-slate-300 leading-relaxed">
-                {selectedChunk.preview.slice(0, 300)}
-                {selectedChunk.preview.length > 300 ? '…' : ''}
-              </p>
+            <p style={{ fontSize: 15, fontWeight: 600, color: '#e0e0f0', margin: '0 0 6px', lineHeight: 1.3 }}>
+              {selected.type === 'document' ? selected.name : selected.doc_title}
+            </p>
 
-              {/* Source document */}
-              <div className="border-t border-slate-700/50 pt-3">
-                <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Source</div>
+            {selected.type === 'document' && (
+              <>
+                <p style={{ fontSize: 11, color: '#444', margin: '0 0 12px' }}>
+                  {selected.domain} · {selected.chunk_count} chunks
+                </p>
+                {selected.excerpt && (
+                  <p style={{ fontSize: 13, color: '#666', lineHeight: 1.6, margin: '0 0 16px' }}>
+                    {selected.excerpt}
+                  </p>
+                )}
                 <Link
-                  href={`/document/${selectedChunk.document_id}`}
-                  className="text-[12px] text-indigo-400 hover:text-indigo-300 transition-colors line-clamp-2"
+                  href={`/document/${selected.document_id}`}
+                  style={{ display: 'block', padding: '8px 14px', background: '#6366f1', borderRadius: 8, color: 'white', fontSize: 13, textAlign: 'center', textDecoration: 'none' }}
                 >
-                  {selectedChunk.document_title}
+                  Open document →
                 </Link>
-              </div>
+              </>
+            )}
 
-              {/* Find similar */}
-              <Link
-                href={`/?q=${encodeURIComponent(selectedChunk.label)}`}
-                className="text-[11px] text-slate-400 hover:text-white transition-colors"
-              >
-                Find similar →
-              </Link>
-            </>
-          )}
-        </div>
+            {selected.type === 'chunk' && (
+              <>
+                <p style={{ fontSize: 11, color: '#444', margin: '0 0 10px' }}>chunk {selected.chunk_index + 1}</p>
+                <p style={{ fontSize: 13, color: '#888', lineHeight: 1.7, margin: '0 0 16px' }}>
+                  {selected.preview}
+                </p>
+                <Link
+                  href={`/document/${selected.document_id}`}
+                  style={{ display: 'block', padding: '8px 14px', background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.3)', borderRadius: 8, color: '#818cf8', fontSize: 13, textAlign: 'center', textDecoration: 'none' }}
+                >
+                  View in document →
+                </Link>
+              </>
+            )}
+          </>
+        )}
       </div>
     </div>
   )
-}
-
-// ─── Force config runner ───────────────────────────────────────────────────────
-// Tiny component that fires the force setup after graph mounts + data changes.
-
-function ForceConfigRunner({
-  onReady,
-  graphRef,
-  deps,
-}: {
-  onReady: () => void
-  graphRef: React.RefObject<any>
-  deps: any
-}) {
-  useEffect(() => {
-    // Small delay to let react-force-graph wire up its own forces first
-    const t = setTimeout(() => {
-      if (graphRef.current) onReady()
-    }, 50)
-    return () => clearTimeout(t)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deps])
-  return null
 }
