@@ -57,14 +57,18 @@ export default function GraphPage() {
       const rawNodes: any[] = data.nodes || []
       const rawEdges: any[] = data.edges || []
 
-      const domainColors: Record<string, string> = {}
-      const docColorMap: Record<number, string>  = {}
+      const colorMap: Record<string, string> = {}
+      const docColorMap: Record<number, string> = {}
       let ci = 0
       rawNodes.filter(n => n.type === 'document').forEach(n => {
-        const d = n.domain || 'unknown'
-        if (!domainColors[d]) domainColors[d] = COLORS[ci++ % COLORS.length]
-        n.color = domainColors[d]
+        // Color by primary concept if available, otherwise by domain
+        const key = n.concept_id != null ? `concept_${n.concept_id}` : `domain_${n.domain || 'unknown'}`
+        if (!colorMap[key]) colorMap[key] = COLORS[ci++ % COLORS.length]
+        n.color = colorMap[key]
         docColorMap[n.document_id] = n.color
+        // Spread hubs so they don't start in a grid
+        n.x = (Math.random() - 0.5) * 600
+        n.y = (Math.random() - 0.5) * 600
       })
       rawNodes.filter(n => n.type === 'chunk').forEach(n => {
         n.color = docColorMap[n.document_id] || '#6366f1'

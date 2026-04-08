@@ -216,6 +216,7 @@ function Dashboard({ session }: { session: any }) {
   const [gaps, setGaps]                 = useState<Gap[]>([]);
   const [loading, setLoading]           = useState(false);
   const [streaming, setStreaming]       = useState(false);
+  const [insightSaved, setInsightSaved] = useState(false);
   const [feedLoading, setFeedLoading]   = useState(true);
   const [discoverLoading, setDiscoverLoading] = useState(false);
   const [mode, setMode]                 = useState<"feed" | "search">("feed");
@@ -324,6 +325,7 @@ function Dashboard({ session }: { session: any }) {
     setMode("search");
     setAnswer("");
     setResults([]);
+    setInsightSaved(false);
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -383,6 +385,19 @@ function Dashboard({ session }: { session: any }) {
   const clearSearch = () => {
     setQuery(""); setMode("feed"); setAnswer(""); setResults([]);
     inputRef.current?.focus();
+  };
+
+  const saveAnswerInsight = async () => {
+    if (!answer || insightSaved) return;
+    try {
+      await authFetch(`${BACKEND}/insights/save`, {
+        method: "POST",
+        body: JSON.stringify({ text: answer, source_query: query }),
+      });
+      setInsightSaved(true);
+    } catch {
+      // silently fail
+    }
   };
 
   return (
@@ -502,9 +517,26 @@ function Dashboard({ session }: { session: any }) {
                   )}
 
                   {answer && (
-                    <div className="md" style={{ fontSize: "15px", lineHeight: 1.8, color: "var(--text-1)" }}>
-                      <ReactMarkdown>{answer}</ReactMarkdown>
-                    </div>
+                    <>
+                      <div className="md" style={{ fontSize: "15px", lineHeight: 1.8, color: "var(--text-1)" }}>
+                        <ReactMarkdown>{answer}</ReactMarkdown>
+                      </div>
+                      <button
+                        onClick={saveAnswerInsight}
+                        disabled={insightSaved}
+                        style={{
+                          marginTop: 12, padding: "4px 12px",
+                          background: insightSaved ? "rgba(52,211,153,0.1)" : "rgba(99,102,241,0.12)",
+                          border: `1px solid ${insightSaved ? "rgba(52,211,153,0.3)" : "rgba(99,102,241,0.3)"}`,
+                          borderRadius: 6,
+                          color: insightSaved ? "#34d399" : "#818cf8",
+                          fontSize: 12, cursor: insightSaved ? "default" : "pointer",
+                          fontFamily: "inherit",
+                        }}
+                      >
+                        {insightSaved ? "✓ Saved to brain" : "+ Save insight to brain"}
+                      </button>
+                    </>
                   )}
                 </div>
               )}
