@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
+import * as d3 from 'd3'
 
 // react-force-graph-2d requires canvas — SSR must be disabled
 const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), { ssr: false })
@@ -78,14 +79,47 @@ async function authFetch(path: string, options: RequestInit = {}) {
   return res.json()
 }
 
+// ─── Cluster color assignment (union-find on strong edges) ───────────────────
+
+function assignClusterColors(nodes: ConceptNode[], links: GraphLink[]): ConceptNode[] {
+  const parent: Record<string, string> = {}
+  nodes.forEach(n => { parent[n.id] = n.id })
+
+  function find(x: string): string {
+    if (parent[x] !== x) parent[x] = find(parent[x])
+    return parent[x]
+  }
+
+  // Union nodes connected by edges with weight > 0.75
+  links
+    .filter(l => (l.weight || 0) > 0.75)
+    .forEach(l => {
+      const sid = typeof l.source === 'object' ? (l.source as any).id : l.source
+      const tid = typeof l.target === 'object' ? (l.target as any).id : l.target
+      parent[find(String(sid))] = find(String(tid))
+    })
+
+  const clusterColors: Record<string, string> = {}
+  let colorIdx = 0
+  nodes.forEach(n => {
+    const root = find(n.id)
+    if (!clusterColors[root]) {
+      clusterColors[root] = CLUSTER_COLORS[colorIdx % CLUSTER_COLORS.length]
+      colorIdx++
+    }
+  })
+
+  return nodes.map(n => ({ ...n, color: clusterColors[find(n.id)] }))
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function TopicsPage() {
-  const fgRef    = useRef<any>(null)
-  const starsRef = useRef<{ x: number; y: number; r: number; a: number }[]>([])
+  const fgRef       = useRef<any>(null)
+  const starsRef    = useRef<{ x: number; y: number; r: number; a: number }[]>([])
+  const hasZoomed   = useRef(false)
 
   const [graphData,    setGraphData]    = useState<GraphData>({ nodes: [], links: [] })
-  const [colorMap,     setColorMap]     = useState<Record<string, string>>({})
   const [panelDocs,    setPanelDocs]    = useState<ConceptDoc[]>([])
   const [panelLoading, setPanelLoading] = useState(false)
 
@@ -144,13 +178,6 @@ export default function TopicsPage() {
         return
       }
 
-      // Assign stable color per index
-      const newColorMap: Record<string, string> = {}
-      rawNodes.forEach((n, i) => {
-        newColorMap[String(n.id)] = CLUSTER_COLORS[i % CLUSTER_COLORS.length]
-      })
-      setColorMap(newColorMap)
-
       // Pre-scatter nodes so they don't start piled at (0,0) and explode outward
       const spread = Math.min(200, 40 + rawNodes.length * 8)
       const nodes: ConceptNode[] = rawNodes.map((n, i) => {
@@ -181,7 +208,9 @@ export default function TopicsPage() {
           linkType: 'concept-concept' as const,
         }))
 
-      setGraphData({ nodes, links })
+      hasZoomed.current = false
+      const coloredNodes = assignClusterColors(nodes, links)
+      setGraphData({ nodes: coloredNodes, links })
       setStatsText(`${nodes.length} concepts · ${links.length} connections`)
     } catch (e: any) {
       setError(e.message)
@@ -196,13 +225,18 @@ export default function TopicsPage() {
   useEffect(() => {
     if (!fgRef.current || graphData.nodes.length === 0) return
     const fg = fgRef.current
-    // Stronger repulsion so disconnected clusters spread apart visibly
-    fg.d3Force('charge')?.strength((n: ConceptNode) => -120 - (n.chunk_count || 1) * 4)
-    // Short link distances keep connected nodes tight
-    fg.d3Force('link')?.distance((l: GraphLink) => 50 + (1 - (l.weight || 0.5)) * 30)
-    // Stronger center pull so clusters don't drift to corners
-    fg.d3Force('center')?.strength(0.25)
-    // Reheat so updated forces take effect immediately
+
+    fg.d3Force('charge')?.strength((n: ConceptNode) =>
+      (n.chunk_count || 1) > 5 ? -200 : -80
+    )
+    fg.d3Force('link')
+      ?.distance((l: GraphLink) => 120 - (l.weight || 0.5) * 80)
+      ?.strength((l: GraphLink) => l.weight || 0.5)
+    fg.d3Force('center')?.strength(0.05)
+    fg.d3Force('collision', d3.forceCollide((n: any) =>
+      (n.chunk_count || 1) > 5 ? 20 : 10
+    ).strength(0.8))
+
     fg.d3ReheatSimulation()
   }, [graphData])
 
@@ -280,46 +314,36 @@ export default function TopicsPage() {
     ctx.fill()
   }, [])
 
-  const paintLink = useCallback((link: any, ctx: CanvasRenderingContext2D) => {
+  const paintLink = useCallback((link: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
     const s = link.source
     const t = link.target
     if (!s?.x || !t?.x) return
 
-    const w = link.weight || 0.5
-    const sc = CLUSTER_COLORS[(s.numId || 0) % CLUSTER_COLORS.length]
-    const tc = CLUSTER_COLORS[(t.numId || 0) % CLUSTER_COLORS.length]
+    const w  = link.weight || 0.5
+    // Use cluster color assigned to each node (falls back to index-based)
+    const sc = s.color || CLUSTER_COLORS[(s.numId || 0) % CLUSTER_COLORS.length]
+    const tc = t.color || CLUSTER_COLORS[(t.numId || 0) % CLUSTER_COLORS.length]
 
     const isActive = hoveredId !== null && (s.id === hoveredId || t.id === hoveredId)
     const isDimmed = hoveredId !== null && !isActive
 
-    // Three tiers — strong / medium / weak
     let baseAlpha: number
     let lineWidth: number
     let dash: number[]
 
-    if (w >= 0.80) {
-      // Strong: near-synonyms within a cluster (solid bright)
-      baseAlpha = 0.80
-      lineWidth = 2.2
-      dash = []
-    } else if (w >= 0.68) {
-      // Medium: related concepts, same or cross-doc (solid softer)
-      baseAlpha = 0.42
-      lineWidth = 1.2
-      dash = []
+    if (w >= 0.90) {
+      baseAlpha = 0.85; lineWidth = 2.2; dash = []
+    } else if (w >= 0.80) {
+      baseAlpha = 0.45; lineWidth = 1.3; dash = []
     } else {
-      // Weak: cross-domain bridges (dashed, same brightness as medium)
-      baseAlpha = 0.42
-      lineWidth = 1.2
-      dash = [3, 5]
+      baseAlpha = 0.45; lineWidth = 1.3; dash = [3, 5]
     }
 
     ctx.globalAlpha = isDimmed ? baseAlpha * 0.08 : isActive ? Math.min(1, baseAlpha * 1.6) : baseAlpha
     ctx.setLineDash(dash)
 
+    const opacity = w >= 0.90 ? 'cc' : '80'
     const grad = ctx.createLinearGradient(s.x, s.y, t.x, t.y)
-    // Strong edges get more saturated color stops
-    const opacity = w >= 0.85 ? 'cc' : '80'
     grad.addColorStop(0, sc + opacity)
     grad.addColorStop(1, tc + opacity)
 
@@ -330,7 +354,19 @@ export default function TopicsPage() {
     ctx.lineWidth   = lineWidth
     ctx.stroke()
 
-    // Reset
+    // Show relationship label at midpoint when zoomed in
+    if (globalScale > 1.8 && link.label) {
+      const mx = (s.x + t.x) / 2
+      const my = (s.y + t.y) / 2
+      ctx.setLineDash([])
+      ctx.globalAlpha = 0.5
+      ctx.font = `${9 / globalScale}px system-ui, sans-serif`
+      ctx.fillStyle = '#ffffff'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(link.label, mx, my)
+    }
+
     ctx.setLineDash([])
     ctx.globalAlpha = 1
   }, [hoveredId])
@@ -386,7 +422,7 @@ export default function TopicsPage() {
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
-  const selectedColor = selectedNode ? (colorMap[selectedNode.id] || '#a89bff') : '#a89bff'
+  const selectedColor = selectedNode?.color || '#a89bff'
 
   return (
     <div style={{
@@ -424,7 +460,10 @@ export default function TopicsPage() {
           warmupTicks={100}
           onEngineStop={() => {
             setGraphReady(true)
-            fgRef.current?.zoomToFit(400, 80)
+            if (!hasZoomed.current) {
+              fgRef.current?.zoomToFit(400, 80)
+              hasZoomed.current = true
+            }
           }}
 
           onNodeClick={handleNodeClick}
@@ -767,17 +806,17 @@ export default function TopicsPage() {
             {/* Strong */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
               <svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="rgba(168,155,255,0.85)" strokeWidth="2.2"/></svg>
-              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>strong ≥0.80</span>
+              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>strong ≥0.90</span>
             </div>
             {/* Medium */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-              <svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="rgba(168,155,255,0.45)" strokeWidth="1.2"/></svg>
-              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>related ≥0.68</span>
+              <svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="rgba(168,155,255,0.45)" strokeWidth="1.3"/></svg>
+              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>related ≥0.80</span>
             </div>
             {/* Weak dashed */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-              <svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="rgba(168,155,255,0.45)" strokeWidth="1.2" strokeDasharray="3 4"/></svg>
-              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>bridge ≥0.60</span>
+              <svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="rgba(168,155,255,0.45)" strokeWidth="1.3" strokeDasharray="3 4"/></svg>
+              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>bridge ≥0.75</span>
             </div>
           </div>
           <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.12)' }}>Click node to inspect · Scroll to zoom · Drag to explore</span>
