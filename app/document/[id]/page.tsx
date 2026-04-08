@@ -107,6 +107,7 @@ export default function DocumentPage() {
   const [compressLoading, setCompressLoading] = useState(false);
   const [showCompressed, setShowCompressed]   = useState(false);
   const [compressCopied, setCompressCopied]   = useState(false);
+  const [savedInsights, setSavedInsights]     = useState<Set<number>>(new Set());
 
   // Load document + related on mount
   useEffect(() => {
@@ -164,6 +165,19 @@ export default function DocumentPage() {
     } catch {
       setMessages(prev => [...prev, { role: "assistant", content: "Something went wrong. Please try again." }]);
     } finally { setChatLoading(false); }
+  };
+
+  const saveInsight = async (msgIndex: number, text: string) => {
+    try {
+      const res = await authFetch(`${BACKEND}/insights/save`, {
+        method: "POST",
+        body: JSON.stringify({ text, document_id: parseInt(id) }),
+      });
+      await res.json();
+      setSavedInsights(prev => new Set(prev).add(msgIndex));
+    } catch {
+      // silently fail — user can retry
+    }
   };
 
   const handleCompress = async () => {
@@ -319,10 +333,30 @@ export default function DocumentPage() {
                 <p style={{ fontSize: "13px", color: "var(--text-3)", margin: 0, textAlign: "center", padding: "20px 0" }}>Ask anything about this capture...</p>
               )}
               {messages.map((msg, i) => (
-                <div key={i} className={msg.role === "user" ? "chat-bubble-user" : "chat-bubble-ai"}>
-                  {msg.role === "assistant"
-                    ? <div className="md"><ReactMarkdown>{msg.content}</ReactMarkdown></div>
-                    : msg.content}
+                <div key={i} style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                  <div className={msg.role === "user" ? "chat-bubble-user" : "chat-bubble-ai"}>
+                    {msg.role === "assistant"
+                      ? <div className="md"><ReactMarkdown>{msg.content}</ReactMarkdown></div>
+                      : msg.content}
+                  </div>
+                  {msg.role === "assistant" && (
+                    <button
+                      onClick={() => saveInsight(i, msg.content)}
+                      disabled={savedInsights.has(i)}
+                      style={{
+                        alignSelf: "flex-start",
+                        background: "none",
+                        border: "none",
+                        padding: "2px 4px",
+                        fontSize: "11px",
+                        color: savedInsights.has(i) ? "var(--text-3)" : "var(--accent)",
+                        cursor: savedInsights.has(i) ? "default" : "pointer",
+                        opacity: savedInsights.has(i) ? 0.7 : 1,
+                      }}
+                    >
+                      {savedInsights.has(i) ? "Saved to your brain ✓" : "Save insight →"}
+                    </button>
+                  )}
                 </div>
               ))}
               {chatLoading && (

@@ -91,16 +91,16 @@ export default function GraphPage() {
   const applyForces = useCallback(() => {
     const fg = fgRef.current
     if (!fg) return
-    fg.d3Force('charge').strength((n: any) => n.is_hub ? -220 : -18)
+    fg.d3Force('charge').strength((n: any) => n.is_hub ? -180 : -18)
     fg.d3Force('link')
       .distance((l: any) =>
-        l.type === 'parent'     ? 38 :
-        l.type === 'similarity' ? 220 :
+        l.type === 'parent'     ? 45 :
+        l.type === 'similarity' ? 350 :
         90
       )
       .strength((l: any) =>
-        l.type === 'parent'     ? 0.92 :
-        l.type === 'similarity' ? 0.25 :
+        l.type === 'parent'     ? 0.6 :
+        l.type === 'similarity' ? 0.12 :
         0.1
       )
     fg.d3ReheatSimulation()
