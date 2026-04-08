@@ -149,6 +149,7 @@ export default function TopicsPage() {
   const [statsText,    setStatsText]    = useState('')
 
   const [graphMode,    setGraphMode]    = useState<'concepts' | 'chunks'>('concepts')
+  const [buildStats,   setBuildStats]   = useState<string>('')
   const [selectedNode, setSelectedNode] = useState<ConceptNode | null>(null)
   const [selectedChunk, setSelectedChunk] = useState<ChunkNode | null>(null)
   const [hoveredId,    setHoveredId]    = useState<string | null>(null)
@@ -387,9 +388,14 @@ export default function TopicsPage() {
 
   const handleBuild = async () => {
     setBuilding(true)
+    setBuildStats('')
     try {
-      // rebuild=true: full wipe-and-recompute since user explicitly clicked Build Graph
-      await authFetch('/concepts/build-edges?rebuild=true',     { method: 'POST' })
+      const res = await authFetch('/concepts/build-edges-from-chunks', { method: 'POST' })
+      setBuildStats(
+        `${res.chunks_reassigned ?? 0} chunks reassigned · ` +
+        `${res.chunk_edges_processed ?? 0} chunk edges · ` +
+        `${res.edges_created ?? 0} connections`
+      )
       await authFetch('/concepts/build-hierarchy', { method: 'POST' })
       await loadGraph(graphMode)
     } catch (e: any) {
@@ -685,6 +691,13 @@ export default function TopicsPage() {
           </div>
         )}
 
+        {/* Build debug stats */}
+        {buildStats && (
+          <div style={{ fontSize: 10, color: 'rgba(168,155,255,0.5)', lineHeight: 1.6, borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 8 }}>
+            {buildStats}
+          </div>
+        )}
+
         {/* Build button — concept mode only */}
         <button
           onClick={handleBuild}
@@ -710,7 +723,7 @@ export default function TopicsPage() {
               animation: 'spin 0.7s linear infinite',
             }} />
           )}
-          {building ? 'Building…' : 'Build Graph'}
+          {building ? 'Building…' : 'Rebuild Connections'}
         </button>
 
         {/* Back link */}
