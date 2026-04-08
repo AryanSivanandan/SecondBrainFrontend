@@ -94,13 +94,13 @@ export default function GraphPage() {
     fg.d3Force('charge').strength((n: any) => n.is_hub ? -180 : -18)
     fg.d3Force('link')
       .distance((l: any) =>
-        l.type === 'parent'     ? 45 :
+        l.type === 'parent'     ? 28 :      // tighter orbit — chunks stay close to hub
         l.type === 'similarity' ? 350 :
         90
       )
       .strength((l: any) =>
         l.type === 'parent'     ? 0.6 :
-        l.type === 'similarity' ? 0.12 :
+        l.type === 'similarity' ? 0.25 :    // restored — pulls related clusters together
         0.1
       )
     fg.d3ReheatSimulation()
