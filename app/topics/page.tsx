@@ -95,19 +95,24 @@ export default function GraphPage() {
   const applyForces = useCallback(() => {
     const fg = fgRef.current
     if (!fg) return
-    fg.d3Force('charge').strength((n: any) => n.is_hub ? -180 : -18)
+    fg.d3Force('charge').strength((n: any) => n.is_hub ? -180 : -40)
     fg.d3Force('link')
       .distance((l: any) =>
-        l.type === 'parent'     ? 28 :      // tighter orbit — chunks stay close to hub
-        l.type === 'similarity' ? 350 :
+        l.type === 'parent'     ? 60 :
+        l.type === 'similarity' ? 300 :
         90
       )
       .strength((l: any) =>
-        l.type === 'parent'     ? 0.6 :
-        l.type === 'similarity' ? 0.25 :    // restored — pulls related clusters together
+        l.type === 'parent'     ? 0.4 :
+        l.type === 'similarity' ? 0.18 :
         0.1
       )
-    fg.d3ReheatSimulation()
+    import('d3').then((d3) => {
+      fg.d3Force('collision', d3.forceCollide((n: any) => {
+        return n.is_hub ? (n.size || 12) + 8 : 8
+      }).strength(0.85))
+      fg.d3ReheatSimulation()
+    })
   }, [])
 
   // Apply forces once graph data + ref are ready
