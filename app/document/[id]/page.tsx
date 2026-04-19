@@ -96,6 +96,9 @@ export default function DocumentPage() {
   const [noteSaved, setNoteSaved]       = useState(false);
   const [loading, setLoading]           = useState(true);
   const [showContent, setShowContent]   = useState(false);
+  const [fullContent, setFullContent]   = useState<string | null>(null);
+  const [contentLoading, setContentLoading] = useState(false);
+  const [insights, setInsights]         = useState<any[]>([]);
   const [copied, setCopied]             = useState(false);
   const [chatMode, setChatMode]         = useState(false);
   const [messages, setMessages]         = useState<Message[]>([]);
@@ -108,6 +111,9 @@ export default function DocumentPage() {
   const [showCompressed, setShowCompressed]   = useState(false);
   const [compressCopied, setCompressCopied]   = useState(false);
   const [savedInsights, setSavedInsights]     = useState<Set<number>>(new Set());
+  const [extSuggestions, setExtSuggestions]   = useState<any[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [suggestionsLoaded, setSuggestionsLoaded]   = useState(false);
 
   // Load document + related on mount
   useEffect(() => {
@@ -118,11 +124,13 @@ export default function DocumentPage() {
         return r.json();
       }),
       authFetch(`${BACKEND}/documents/${id}/related`).then(r => r.json()).catch(() => []),
-    ]).then(([docData, relatedData]) => {
+      authFetch(`${BACKEND}/documents/${id}/insights`).then(r => r.json()).catch(() => []),
+    ]).then(([docData, relatedData, insightsData]) => {
       if (!docData) return;
       setDoc(docData);
       setNote(docData.user_note || "");
       setRelated(Array.isArray(relatedData) ? relatedData : []);
+      setInsights(Array.isArray(insightsData) ? insightsData : []);
     }).catch(console.error).finally(() => setLoading(false));
   }, [id]);
 
@@ -199,6 +207,46 @@ export default function DocumentPage() {
     }
   };
 
+  const handleShowContent = async () => {
+    setShowContent(true);
+    if (fullContent) return;
+    setContentLoading(true);
+    try {
+      const res = await authFetch(`${BACKEND}/documents/${id}/full`);
+      const data = await res.json();
+      setFullContent(data.content);
+    } finally {
+      setContentLoading(false);
+    }
+  };
+
+  const loadSuggestions = async () => {
+    setSuggestionsLoading(true);
+    try {
+      const res = await authFetch(`${BACKEND}/documents/${id}/external-suggestions`);
+      const data = await res.json();
+      setExtSuggestions(Array.isArray(data) ? data : []);
+      setSuggestionsLoaded(true);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSuggestionsLoading(false);
+    }
+  };
+
+  const captureUrl = async (url: string, index: number) => {
+    setExtSuggestions(prev => prev.map((s, i) => i === index ? { ...s, capturing: true } : s));
+    try {
+      await authFetch(`${BACKEND}/capture-url`, {
+        method: "POST",
+        body: JSON.stringify({ url }),
+      });
+      setExtSuggestions(prev => prev.map((s, i) => i === index ? { ...s, capturing: false, captured: true } : s));
+    } catch {
+      setExtSuggestions(prev => prev.map((s, i) => i === index ? { ...s, capturing: false } : s));
+    }
+  };
+
   // ── Loading / not found states ──────────────────────────── //
   if (loading) return (
     <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -263,7 +311,54 @@ export default function DocumentPage() {
       </nav>
 
       {/* ── Page content ────────────────────────────── */}
-      <div style={{ maxWidth: "720px", margin: "0 auto", padding: "52px 36px 96px" }}>
+      <style>{`
+        @keyframes pulse { 0%,100%{opacity:0.3} 50%{opacity:0.7} }
+        @media (min-width: 1024px) { .doc-layout { grid-template-columns: 260px 1fr 280px !important; } }
+      `}</style>
+      <div
+        className="doc-layout"
+        style={{ display: "grid", gridTemplateColumns: "1fr", gap: 24, maxWidth: 1300, margin: "0 auto", padding: "32px 20px 96px" }}
+      >
+
+        {/* ── LEFT COLUMN — Chat Insights ── */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {insights.length > 0 ? (
+            <div style={{ background: "#0d0d14", border: "1px solid #1a1a2e", borderRadius: 12, padding: "18px 20px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+                <span style={{ fontSize: 16 }}>💡</span>
+                <h3 style={{ fontSize: 14, fontWeight: 600, color: "#e0e0f0", margin: 0 }}>Chat Insights</h3>
+                <span style={{ marginLeft: "auto", fontSize: 11, color: "#444", background: "#1a1a2e", padding: "2px 8px", borderRadius: 10 }}>
+                  {insights.length}
+                </span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {insights.map(insight => (
+                  <div key={insight.id} style={{
+                    padding: "12px 14px",
+                    background: insight.source_type === "insight" ? "rgba(99,102,241,0.06)" : "rgba(6,255,165,0.04)",
+                    border: `1px solid ${insight.source_type === "insight" ? "rgba(99,102,241,0.15)" : "rgba(6,255,165,0.1)"}`,
+                    borderRadius: 8,
+                  }}>
+                    <p style={{ fontSize: 13, color: "#888", lineHeight: 1.65, margin: "0 0 6px" }}>{insight.content}</p>
+                    <span style={{ fontSize: 11, color: insight.source_type === "insight" ? "#6366f1" : "#06ffa5" }}>
+                      {insight.source_type === "insight" ? "✦ saved insight" : "◈ from chat"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div style={{ background: "#0d0d14", border: "1px solid #1a1a2e", borderRadius: 12, padding: "18px 20px" }}>
+              <p style={{ fontSize: 11, color: "#333", textTransform: "uppercase", letterSpacing: "0.1em", margin: "0 0 10px" }}>Chat Insights</p>
+              <p style={{ fontSize: 12, color: "#2a2a3a", margin: 0, lineHeight: 1.6 }}>
+                Chat about this document to generate insights that will appear here.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* ── CENTER COLUMN — Main content ── */}
+        <div>
 
         {/* Document header */}
         <div style={{ marginBottom: "36px" }} className="fade-up">
@@ -389,7 +484,7 @@ export default function DocumentPage() {
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <button
               className="btn btn-ghost"
-              onClick={() => setShowContent(!showContent)}
+              onClick={() => showContent ? setShowContent(false) : handleShowContent()}
               style={{ padding: "6px 14px", fontSize: "12.5px" }}
             >
               {showContent ? "↑ Hide content" : "↓ Show full content"}
@@ -512,9 +607,23 @@ export default function DocumentPage() {
               </div>
             </div>
           )}
-          {showContent && doc.content && (
-            <div className="card fade-up md" style={{ marginTop: "12px", padding: "24px 26px", maxHeight: "560px", overflowY: "auto", fontSize: "14.5px", color: "var(--text-2)", lineHeight: 1.9 }}>
-              <ReactMarkdown>{doc.content}</ReactMarkdown>
+          {showContent && (
+            <div style={{
+              maxHeight: "60vh", overflowY: "auto",
+              padding: "20px 24px",
+              background: "#0d0d14",
+              borderRadius: 10,
+              border: "1px solid #1a1a2e",
+              lineHeight: 1.8,
+              fontSize: 15,
+              color: "#c0c0d0",
+              marginTop: 12,
+            }}>
+              {contentLoading ? (
+                <p style={{ color: "#444" }}>Loading full content...</p>
+              ) : (
+                <div className="md"><ReactMarkdown>{fullContent || ""}</ReactMarkdown></div>
+              )}
             </div>
           )}
         </div>
@@ -548,37 +657,108 @@ export default function DocumentPage() {
           </div>
         </div>
 
-        {/* Related captures */}
-        {related.length > 0 && (
-          <div style={{ marginBottom: "30px" }}>
-            <div className="section-label" style={{ marginBottom: "12px" }}>Related captures</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-              {related.map(r => (
-                <Link key={r.id} href={`/document/${r.id}`}>
-                  <div className="card card-link" style={{ padding: "13px 18px" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
-                      <div style={{ flex: 1 }}>
-                        <p style={{ fontSize: "13.5px", fontWeight: 500, margin: "0 0 3px", color: "var(--text-1)" }}>{r.title}</p>
-                        {r.excerpt && (
-                          <p style={{ fontSize: "12.5px", color: "var(--text-2)", margin: 0, lineHeight: 1.5 }}>
-                            {r.excerpt.slice(0, 100)}{r.excerpt.length > 100 ? "…" : ""}
-                          </p>
-                        )}
-                      </div>
-                      {r.similarity && (
-                        <span style={{ fontSize: "11px", color: "var(--text-3)", flexShrink: 0, paddingTop: "2px" }}>
-                          {(r.similarity * 100).toFixed(0)}%
-                        </span>
+        </div>{/* end center column */}
+
+        {/* ── RIGHT COLUMN — Related reading ── */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ background: "#0d0d14", border: "1px solid #1a1a2e", borderRadius: 12, padding: "16px 18px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <p style={{ fontSize: 11, color: "#555", textTransform: "uppercase", letterSpacing: "0.1em", margin: 0 }}>
+                Related reading
+              </p>
+              {!suggestionsLoaded && (
+                <button
+                  onClick={loadSuggestions}
+                  disabled={suggestionsLoading}
+                  style={{
+                    padding: "4px 10px",
+                    background: "rgba(99,102,241,0.12)",
+                    border: "1px solid rgba(99,102,241,0.25)",
+                    borderRadius: 6, color: "#818cf8",
+                    fontSize: 11, cursor: suggestionsLoading ? "not-allowed" : "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  {suggestionsLoading ? "Finding…" : "Find →"}
+                </button>
+              )}
+            </div>
+
+            {!suggestionsLoaded && !suggestionsLoading && (
+              <p style={{ fontSize: 12, color: "#2a2a3a", textAlign: "center", padding: "20px 0", margin: 0 }}>
+                Click Find to discover related articles
+              </p>
+            )}
+
+            {suggestionsLoading && [1, 2, 3].map(i => (
+              <div key={i} style={{
+                height: 72, borderRadius: 8, background: "#111118",
+                marginBottom: 8, animation: "pulse 1.5s ease-in-out infinite",
+              }} />
+            ))}
+
+            {suggestionsLoaded && extSuggestions.map((s, i) => (
+              <div key={i} style={{
+                padding: "12px 14px", background: "#111118",
+                borderRadius: 8, border: "1px solid #1a1a2e", marginBottom: 8,
+              }}>
+                <p style={{ fontSize: 11, color: "#6366f1", margin: "0 0 3px" }}>{s.domain}</p>
+                <p style={{ fontSize: 13, fontWeight: 500, color: "#e0e0f0", margin: "0 0 4px", lineHeight: 1.4 }}>{s.title}</p>
+                <p style={{ fontSize: 11, color: "#555", margin: "0 0 8px", lineHeight: 1.5 }}>{s.snippet}</p>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <a href={s.url} target="_blank" rel="noopener noreferrer"
+                    style={{ fontSize: 11, color: "#555", textDecoration: "none", padding: "3px 8px", border: "1px solid #1a1a2e", borderRadius: 5 }}>
+                    Read →
+                  </a>
+                  <button
+                    onClick={() => captureUrl(s.url, i)}
+                    disabled={s.capturing || s.captured}
+                    style={{
+                      fontSize: 11,
+                      color: s.captured ? "#06ffa5" : "#818cf8",
+                      background: s.captured ? "rgba(6,255,165,0.08)" : "rgba(99,102,241,0.1)",
+                      border: `1px solid ${s.captured ? "rgba(6,255,165,0.2)" : "rgba(99,102,241,0.2)"}`,
+                      borderRadius: 5, padding: "3px 8px",
+                      cursor: s.capturing || s.captured ? "default" : "pointer",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    {s.captured ? "✓ Saved" : s.capturing ? "Saving…" : "+ Add to brain"}
+                  </button>
+                </div>
+              </div>
+            ))}
+
+            {suggestionsLoaded && extSuggestions.length === 0 && (
+              <p style={{ fontSize: 12, color: "#333", textAlign: "center", padding: "8px 0", margin: 0 }}>
+                No suggestions found.
+              </p>
+            )}
+          </div>
+
+          {/* In your brain — related captures */}
+          {related.length > 0 && (
+            <div style={{ background: "#0d0d14", border: "1px solid #1a1a2e", borderRadius: 12, padding: "16px 18px" }}>
+              <p style={{ fontSize: 11, color: "#555", textTransform: "uppercase", letterSpacing: "0.1em", margin: "0 0 12px" }}>In your brain</p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {related.map(r => (
+                  <Link key={r.id} href={`/document/${r.id}`}>
+                    <div className="card card-link" style={{ padding: "11px 14px" }}>
+                      <p style={{ fontSize: "13px", fontWeight: 500, margin: "0 0 2px", color: "var(--text-1)" }}>{r.title}</p>
+                      {r.excerpt && (
+                        <p style={{ fontSize: "12px", color: "var(--text-2)", margin: 0, lineHeight: 1.5 }}>
+                          {r.excerpt.slice(0, 80)}{r.excerpt.length > 80 ? "…" : ""}
+                        </p>
                       )}
                     </div>
-                  </div>
-                </Link>
-              ))}
+                  </Link>
+                ))}
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>{/* end right column */}
 
-      </div>
+      </div>{/* end doc-layout grid */}
     </div>
   );
 }
